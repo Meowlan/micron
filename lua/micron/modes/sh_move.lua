@@ -177,4 +177,4 @@ if CLIENT then
     vgui.Register(MODE.PanelClass, PANEL, "DPanel")
 end
 
-Registry.Register("face_snap", MODE)
+Registry.Register("move", MODE)
