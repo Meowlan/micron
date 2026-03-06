@@ -4,6 +4,7 @@ Micron.Controller = Micron.Controller or {}
 local Controller = Micron.Controller
 local Registry = Micron.ModeRegistry
 local Math = Micron.Math
+local Utils = Micron.ModeUtils
 
 Controller._states = Controller._states or setmetatable({}, { __mode = "k" })
 
@@ -32,29 +33,60 @@ local function getState(ply)
     return state
 end
 
+local function connectorHasEntity(source)
+    return source and IsValid(source.entity)
+end
+
+local function connectorHasWorldSnapshot(source)
+    return source and source.hitPosWorld and source.worldBasis and source.worldBasis.n and source.worldBasis.u
+end
+
+local function connectorIsUsable(source)
+    return connectorHasEntity(source) or connectorHasWorldSnapshot(source)
+end
+
 local function updateClientState(ply, state)
     if not IsValid(ply) then return end
 
-    local hasSource = state and state.source and IsValid(state.source.entity)
+    local source = state and state.source or nil
+    local hasSource = connectorIsUsable(source)
     ply:SetNW2Bool("Micron.HasSource", hasSource and true or false)
 
     if hasSource then
-        local ent = state.source.entity
-        local worldPos = ent:LocalToWorld(state.source.localPos)
-        local worldNormal = Math.LocalDirToWorld(ent, state.source.localBasis.n)
+        if connectorHasEntity(source) then
+            local ent = source.entity
+            local sourceLocalPos = source.localPos or vector_origin
+            local sourceLocalBasis = source.localBasis or Math.BuildBasis(Vector(0, 0, 1), Vector(1, 0, 0))
+            local worldPos = ent:LocalToWorld(sourceLocalPos)
+            local worldNormal = Math.LocalDirToWorld(ent, sourceLocalBasis.n)
 
-        ply:SetNW2Vector("Micron.SourcePos", worldPos)
-        ply:SetNW2Vector("Micron.SourceNormal", worldNormal)
-        ply:SetNW2Entity("Micron.SourceEnt", ent)
-        ply:SetNW2Vector("Micron.SourceLocalPos", state.source.localPos)
-        ply:SetNW2Vector("Micron.SourceLocalN", state.source.localBasis.n)
-        ply:SetNW2Vector("Micron.SourceLocalU", state.source.localBasis.u)
+            ply:SetNW2Vector("Micron.SourcePos", worldPos)
+            ply:SetNW2Vector("Micron.SourceNormal", worldNormal)
+            ply:SetNW2Entity("Micron.SourceEnt", ent)
+            ply:SetNW2Bool("Micron.SourceIsWorld", false)
+            ply:SetNW2Vector("Micron.SourceLocalPos", sourceLocalPos)
+            ply:SetNW2Vector("Micron.SourceLocalN", sourceLocalBasis.n)
+            ply:SetNW2Vector("Micron.SourceLocalU", sourceLocalBasis.u)
+        else
+            local worldBasis = Math.BuildBasis(source.worldBasis.n, source.worldBasis.u)
+            local worldPos = source.hitPosWorld or vector_origin
+
+            ply:SetNW2Vector("Micron.SourcePos", worldPos)
+            ply:SetNW2Vector("Micron.SourceNormal", worldBasis.n)
+            ply:SetNW2Entity("Micron.SourceEnt", NULL)
+            ply:SetNW2Bool("Micron.SourceIsWorld", true)
+            ply:SetNW2Vector("Micron.SourceLocalPos", vector_origin)
+            ply:SetNW2Vector("Micron.SourceLocalN", worldBasis.n)
+            ply:SetNW2Vector("Micron.SourceLocalU", worldBasis.u)
+        end
+
         ply:SetNW2String("Micron.SourceMode", state.modeId or "")
         ply:SetNW2Bool("Micron.SourceDuplicateOnApply", state.duplicateOnApply and true or false)
     else
         ply:SetNW2Vector("Micron.SourcePos", vector_origin)
         ply:SetNW2Vector("Micron.SourceNormal", vector_origin)
         ply:SetNW2Entity("Micron.SourceEnt", NULL)
+        ply:SetNW2Bool("Micron.SourceIsWorld", false)
         ply:SetNW2Vector("Micron.SourceLocalPos", vector_origin)
         ply:SetNW2Vector("Micron.SourceLocalN", vector_origin)
         ply:SetNW2Vector("Micron.SourceLocalU", vector_origin)
@@ -71,14 +103,20 @@ local function resetState(ply)
 end
 
 local function getModeSettings(mode, tool)
+    local settings = {}
+
     if mode and mode.GetSettings then
-        local settings = mode.GetSettings(tool)
-        if istable(settings) then
-            return settings
+        local fromMode = mode.GetSettings(tool)
+        if istable(fromMode) then
+            settings = fromMode
         end
     end
 
-    return {}
+    if Utils and Utils.ValidateSettingsForMode then
+        settings = Utils.ValidateSettingsForMode(mode and mode.id or "", settings)
+    end
+
+    return settings
 end
 
 local function ensureModeState(tool, ply)
@@ -207,6 +245,26 @@ local function duplicateEntityForSnap(ply, sourceEnt)
     return created
 end
 
+local function buildModeApplyHelpers(ply)
+    return {
+        duplicateEntityForSnap = duplicateEntityForSnap,
+        validateTransform = function(ent, pos, ang)
+            if not Utils or not Utils.ValidateTransformForPlayer then
+                return true
+            end
+
+            return Utils.ValidateTransformForPlayer(ply, ent, pos, ang)
+        end,
+        allowDuplication = function()
+            if not Utils or not Utils.AllowDuplication then
+                return true
+            end
+
+            return Utils.AllowDuplication()
+        end
+    }
+end
+
 local function applyPostSnapOptions(sourceConnector, targetConnector, settings)
     local sourceEnt = sourceConnector.entity
     local targetEnt = targetConnector and targetConnector.entity or nil
@@ -237,50 +295,10 @@ local function applyPostSnapOptions(sourceConnector, targetConnector, settings)
     return created
 end
 
-function Controller.LeftClick(tool, trace)
-    local ply = tool:GetOwner()
-    if not IsValid(ply) then return false end
-
-    local mode, state = ensureModeState(tool, ply)
-    if not mode then
-        return false
-    end
-
-    local settings = getModeSettings(mode, tool)
-
-    if not state.source then
-        local sourceConnector = mode.BuildConnector(ply, trace, settings)
-        if not sourceConnector then
-            return false
-        end
-
-        state.source = sourceConnector
-        if mode.LatchDuplicateOnSource then
-            state.duplicateOnApply = ply:KeyDown(IN_SPEED) and true or false
-        else
-            state.duplicateOnApply = nil
-        end
-
-        updateClientState(ply, state)
-        return true
-    end
-
-    local targetConnector = nil
-    if mode.RequiresTargetConnector ~= false then
-        targetConnector = mode.BuildConnector(ply, trace, settings)
-        if not targetConnector then
-            return false
-        end
-    end
-
-    if not IsValid(state.source.entity) then
-        resetState(ply)
-        return false
-    end
-
-    local applyClickDuplicate = ply:KeyDown(IN_SPEED) and true or false
+local function resolveDuplicateStateForApply(mode, state, applyClickDuplicate)
     local sourceClickDuplicate = state.duplicateOnApply and true or false
-    local shouldDuplicate = applyClickDuplicate
+    local shouldDuplicate = applyClickDuplicate and true or false
+
     if mode.LatchDuplicateOnSource then
         if mode.DuplicateFromSourceOnly then
             state.duplicateOnApply = sourceClickDuplicate
@@ -293,34 +311,32 @@ function Controller.LeftClick(tool, trace)
         shouldDuplicate = sourceClickDuplicate
     end
 
-    if targetConnector and state.source.entity == targetConnector.entity then
-        local allowSelfTarget = mode.AllowSelfTargetWhenDuplicating and shouldDuplicate
-        if not allowSelfTarget then
-            return false
-        end
+    if mode.AlwaysDuplicate then
+        shouldDuplicate = true
     end
 
-    if mode.Apply then
-        local handled = mode.Apply(tool, ply, state, settings, targetConnector, shouldDuplicate, {
-            duplicateEntityForSnap = duplicateEntityForSnap
-        })
-
-        if handled ~= nil then
-            if handled then
-                resetState(ply)
-            end
-            return handled and true or false
-        end
+    if mode.InvertDuplicateInput then
+        shouldDuplicate = not shouldDuplicate
     end
 
-    local solve = mode.Solve(state.source, targetConnector, settings, { rotation = {0, 0, 0} })
-    if not solve then
+    if shouldDuplicate and Utils and Utils.AllowDuplication and not Utils.AllowDuplication() then
+        shouldDuplicate = false
+    end
+
+    return shouldDuplicate, sourceClickDuplicate
+end
+
+local function applySolvedTransform(ply, state, solve, targetConnector, settings, shouldDuplicate)
+    local sourceEnt = solve.entity
+    if not IsValid(sourceEnt) then
         return false
     end
 
-    local sourceEnt = solve.entity
-    if not IsValid(sourceEnt) then
-        resetState(ply)
+    if Utils and Utils.ValidateEntityForPlayer and not Utils.ValidateEntityForPlayer(ply, sourceEnt) then
+        return false
+    end
+
+    if Utils and Utils.ValidateTransformForPlayer and not Utils.ValidateTransformForPlayer(ply, sourceEnt, solve.position, solve.angles) then
         return false
     end
 
@@ -329,6 +345,11 @@ function Controller.LeftClick(tool, trace)
     if shouldDuplicate then
         local duplicated = duplicateEntityForSnap(ply, sourceEnt)
         if not IsValid(duplicated) then
+            return false
+        end
+
+        if Utils and Utils.ValidateTransformForPlayer and not Utils.ValidateTransformForPlayer(ply, duplicated, solve.position, solve.angles) then
+            duplicated:Remove()
             return false
         end
 
@@ -360,10 +381,150 @@ function Controller.LeftClick(tool, trace)
     }
 
     local createdConstraints = applyPostSnapOptions(sourceConnectorForPost, targetConnector, settings)
-
     createUndoForMove(ply, ent, oldPos, oldAng, oldMotionEnabled, createdConstraints, shouldDuplicate)
 
-    resetState(ply)
+    return true
+end
+
+function Controller.LeftClick(tool, trace)
+    local ply = tool:GetOwner()
+    if not IsValid(ply) then return false end
+
+    local mode, state = ensureModeState(tool, ply)
+    if not mode then
+        return false
+    end
+
+    local settings = getModeSettings(mode, tool)
+
+    if not state.source then
+        local sourceConnector = mode.BuildConnector(ply, trace, settings)
+        if not sourceConnector then
+            return false
+        end
+
+        if sourceConnector.entity and Utils and Utils.ValidateEntityForPlayer and not Utils.ValidateEntityForPlayer(ply, sourceConnector.entity) then
+            return false
+        end
+
+        state.source = sourceConnector
+        if mode.LatchDuplicateOnSource then
+            state.duplicateOnApply = ply:KeyDown(IN_SPEED) and true or false
+        else
+            state.duplicateOnApply = nil
+        end
+
+        local instantApply = false
+        if mode.ApplyOnSourceSelection ~= nil then
+            if isfunction(mode.ApplyOnSourceSelection) then
+                instantApply = mode.ApplyOnSourceSelection(state, settings, tool, ply) and true or false
+            else
+                instantApply = mode.ApplyOnSourceSelection and true or false
+            end
+        end
+
+        if instantApply then
+            local shouldDuplicate = resolveDuplicateStateForApply(mode, state, ply:KeyDown(IN_SPEED) and true or false)
+            local helpers = buildModeApplyHelpers(ply)
+
+            if mode.Apply then
+                local handled = mode.Apply(tool, ply, state, settings, nil, shouldDuplicate, helpers)
+                if handled ~= nil then
+                    if handled then
+                        if mode.PreserveSourceAfterApply then
+                            updateClientState(ply, state)
+                        else
+                            resetState(ply)
+                        end
+                    end
+                    return handled and true or false
+                end
+            end
+
+            local solve = mode.Solve(state.source, nil, settings, { rotation = {0, 0, 0} })
+            if not solve then
+                resetState(ply)
+                return false
+            end
+
+            local applied = applySolvedTransform(ply, state, solve, nil, settings, shouldDuplicate)
+            if applied then
+                if mode.PreserveSourceAfterApply then
+                    updateClientState(ply, state)
+                else
+                    resetState(ply)
+                end
+            else
+                resetState(ply)
+            end
+            return applied
+        end
+
+        updateClientState(ply, state)
+        return true
+    end
+
+    local targetConnector = nil
+    if mode.RequiresTargetConnector ~= false then
+        targetConnector = mode.BuildConnector(ply, trace, settings)
+        if not targetConnector then
+            return false
+        end
+
+        if targetConnector.entity and Utils and Utils.ValidateEntityForPlayer and not Utils.ValidateEntityForPlayer(ply, targetConnector.entity) then
+            return false
+        end
+    end
+
+    if not connectorIsUsable(state.source) then
+        resetState(ply)
+        return false
+    end
+
+    local shouldDuplicate, _ = resolveDuplicateStateForApply(mode, state, ply:KeyDown(IN_SPEED) and true or false)
+
+    if targetConnector and IsValid(state.source.entity) and IsValid(targetConnector.entity) and state.source.entity == targetConnector.entity then
+        local allowSelfTarget = mode.AllowSelfTargetWhenDuplicating and shouldDuplicate
+        if not allowSelfTarget then
+            return false
+        end
+    end
+
+    if mode.Apply then
+        local handled = mode.Apply(tool, ply, state, settings, targetConnector, shouldDuplicate, buildModeApplyHelpers(ply))
+
+        if handled ~= nil then
+            if handled then
+                if mode.PreserveSourceAfterApply then
+                    updateClientState(ply, state)
+                else
+                    resetState(ply)
+                end
+            end
+            return handled and true or false
+        end
+    end
+
+    local solve = mode.Solve(state.source, targetConnector, settings, { rotation = {0, 0, 0} })
+    if not solve then
+        return false
+    end
+
+    local applied = applySolvedTransform(ply, state, solve, targetConnector, settings, shouldDuplicate)
+    if not applied then
+        if not mode.PreserveSourceAfterApply then
+            resetState(ply)
+        else
+            updateClientState(ply, state)
+        end
+        return false
+    end
+
+    if mode.PreserveSourceAfterApply then
+        updateClientState(ply, state)
+    else
+        resetState(ply)
+    end
     return true
 end
 
@@ -372,6 +533,9 @@ function Controller.RightClick(tool)
     if not IsValid(ply) then return false end
 
     local mode, state = ensureModeState(tool, ply)
+    if not mode then
+        return false
+    end
 
     if ply:KeyDown(IN_USE) then
         resetState(ply)
@@ -439,6 +603,7 @@ function Controller.ResetPlayerState(ply)
     ply:SetNW2Vector("Micron.SourcePos", vector_origin)
     ply:SetNW2Vector("Micron.SourceNormal", vector_origin)
     ply:SetNW2Entity("Micron.SourceEnt", NULL)
+    ply:SetNW2Bool("Micron.SourceIsWorld", false)
     ply:SetNW2Vector("Micron.SourceLocalPos", vector_origin)
     ply:SetNW2Vector("Micron.SourceLocalN", vector_origin)
     ply:SetNW2Vector("Micron.SourceLocalU", vector_origin)

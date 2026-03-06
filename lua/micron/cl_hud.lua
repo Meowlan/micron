@@ -5,6 +5,7 @@ local Client = Micron.Client
 local Math = Micron.Math
 local SnapPoints = Micron.SnapPoints
 local Registry = Micron.ModeRegistry
+local Utils = Micron.ModeUtils
 
 local sourceColor = Color(80, 200, 255, 255)
 local targetColor = Color(255, 140, 90, 255)
@@ -62,6 +63,10 @@ local function getToolSettings(tool)
         settings = mode.GetSettings(tool) or {}
     end
 
+    if Utils and Utils.ValidateSettingsForMode then
+        settings = Utils.ValidateSettingsForMode(modeId, settings)
+    end
+
     settings.modeId = modeId
     settings.gridSubdivisions = math.max(1, math.floor(tonumber(settings.gridSubdivisions or 6) or 6))
     return settings
@@ -91,14 +96,25 @@ local function getSourceConnectorFromState(ply)
     end
 
     local sourceEnt = ply:GetNW2Entity("Micron.SourceEnt", NULL)
-    if not IsValid(sourceEnt) then
-        return nil
-    end
-
     local localPos = ply:GetNW2Vector("Micron.SourceLocalPos", vector_origin)
     local localN = ply:GetNW2Vector("Micron.SourceLocalN", DEFAULT_LOCAL_N)
     local localU = ply:GetNW2Vector("Micron.SourceLocalU", DEFAULT_LOCAL_U)
     local localBasis = Math.BuildBasis(localN, localU)
+
+    if not IsValid(sourceEnt) then
+        local worldBasis = Math.BuildBasis(localBasis.n, localBasis.u)
+        local hitPosWorld = ply:GetNW2Vector("Micron.SourcePos", vector_origin)
+
+        return {
+            entity = nil,
+            localPos = vector_origin,
+            localBasis = localBasis,
+            worldBasis = worldBasis,
+            hitPosWorld = hitPosWorld,
+            duplicateOnApply = ply:GetNW2Bool("Micron.SourceDuplicateOnApply", false),
+            isWorld = ply:GetNW2Bool("Micron.SourceIsWorld", false)
+        }
+    end
 
     local worldNormal = Math.LocalDirToWorld(sourceEnt, localBasis.n)
     local worldTangent = Math.LocalDirToWorld(sourceEnt, localBasis.u)
@@ -130,12 +146,12 @@ local function computePreviewSolve(tool, ply, sourceConnector, settings)
     end
 
     local trace = ply:GetEyeTrace()
-    if not trace or not trace.Hit or trace.HitWorld then
+    if not trace or not trace.Hit then
         return nil
     end
 
     local targetConnector = mode.BuildConnector(ply, trace, settings)
-    if not targetConnector or not IsValid(targetConnector.entity) then
+    if not targetConnector then
         return nil
     end
 
@@ -180,9 +196,43 @@ local function drawPreviewGhost(solve)
     render.SetBlend(1)
 end
 
+local function drawPreviewGhosts(sourceEnt, ghosts)
+    if not IsValid(sourceEnt) or not istable(ghosts) or #ghosts == 0 then
+        return
+    end
+
+    local modelName = sourceEnt:GetModel()
+    if not isstring(modelName) or modelName == "" then
+        return
+    end
+
+    local skin = sourceEnt:GetSkin() or 0
+    local maxGhosts = math.min(#ghosts, 64)
+
+    for i = 1, maxGhosts do
+        local ghost = ghosts[i]
+        if ghost and ghost.position and ghost.angles then
+            local blend = math.max(0.14, 0.32 - (i - 1) * 0.008)
+            render.SetBlend(blend)
+            render.Model({
+                model = modelName,
+                pos = ghost.position,
+                angle = ghost.angles,
+                skin = skin
+            })
+        end
+    end
+
+    render.SetBlend(1)
+end
+
 local function shouldPreviewDuplicate(ply, mode, sourceConnector)
     if not mode then
         return false
+    end
+
+    if mode.AlwaysDuplicate then
+        return true
     end
 
     local shouldDuplicate = ply:KeyDown(IN_SPEED) and true or false
@@ -198,6 +248,10 @@ local function shouldPreviewDuplicate(ply, mode, sourceConnector)
         if mode.DuplicateFromSourceOnly then
             shouldDuplicate = sourceClickDuplicate
         end
+    end
+
+    if mode.InvertDuplicateInput then
+        shouldDuplicate = not shouldDuplicate
     end
 
     return shouldDuplicate
@@ -240,7 +294,7 @@ if CLIENT and not Client._targetHoloHookInstalled then
         end
 
         local color = Client._targetHoloColor or targetHoloColor
-        halo.Add({ ent }, color, 3, 3, 3, true, true)
+        halo.Add({ ent }, color, 2, 2, 2, true, true)
     end)
 
     Client._targetHoloHookInstalled = true
@@ -256,17 +310,24 @@ function Client.RenderWorld(tool)
     local mode = getActiveMode(settings)
     local sourceConnector = getSourceConnectorFromState(ply)
 
-    if sourceConnector and IsValid(sourceConnector.entity) then
-        local duplicatePreview = shouldPreviewDuplicate(ply, mode, sourceConnector)
-        updateTargetHoloState(sourceConnector.entity, duplicatePreview)
+    local trace = ply:GetEyeTrace()
+    local hoverConnector = nil
+    if not sourceConnector and mode and mode.PreviewFromTraceWhenIdle and mode.BuildConnector and trace and trace.Hit and not trace.HitWorld then
+        hoverConnector = mode.BuildConnector(ply, trace, settings)
     end
 
-    local trace = ply:GetEyeTrace()
+    local previewConnector = sourceConnector or hoverConnector
+
+    if previewConnector and IsValid(previewConnector.entity) then
+        local duplicatePreview = shouldPreviewDuplicate(ply, mode, previewConnector)
+        updateTargetHoloState(previewConnector.entity, duplicatePreview)
+    end
+
     if trace and trace.Hit then
         local len = 8
         drawAxisLine(trace.HitPos, trace.HitNormal:GetNormalized(), len, targetColor)
 
-        if not trace.HitWorld and SnapPoints and SnapPoints.IsSnappableEntity(trace.Entity) then
+        if not (mode and mode.DisableSnapVisualization) and not trace.HitWorld and SnapPoints and SnapPoints.IsSnappableEntity(trace.Entity) then
             local snapData = SnapPoints.ComputeForEntity(trace.Entity, trace.HitPos, trace.HitNormal, settings.gridSubdivisions)
             if snapData then
                 drawSnapData(trace.Entity, snapData)
@@ -274,12 +335,16 @@ function Client.RenderWorld(tool)
         end
     end
 
-    if not sourceConnector then
+    if not previewConnector then
         return
     end
 
-    local sourcePos = sourceConnector.entity:LocalToWorld(sourceConnector.localPos)
-    local sourceNormal = Math.LocalDirToWorld(sourceConnector.entity, sourceConnector.localBasis.n)
+    local sourcePos = previewConnector.hitPosWorld
+    local sourceNormal = previewConnector.worldBasis and previewConnector.worldBasis.n or vector_origin
+    if IsValid(previewConnector.entity) then
+        sourcePos = previewConnector.entity:LocalToWorld(previewConnector.localPos)
+        sourceNormal = Math.LocalDirToWorld(previewConnector.entity, previewConnector.localBasis.n)
+    end
 
     if sourceNormal:LengthSqr() <= 0 then
         return
@@ -287,8 +352,17 @@ function Client.RenderWorld(tool)
 
     drawAxisLine(sourcePos, sourceNormal:GetNormalized(), 10, sourceColor)
 
-    local solve = computePreviewSolve(tool, ply, sourceConnector, settings)
-    drawPreviewGhost(solve)
+    if mode and mode.DrawSourceOverlay then
+        mode.DrawSourceOverlay(previewConnector, settings, trace, ply)
+    end
+
+    if mode and mode.GetPreviewGhosts then
+        local ghosts = mode.GetPreviewGhosts(previewConnector, settings)
+        drawPreviewGhosts(previewConnector.entity, ghosts)
+    else
+        local solve = computePreviewSolve(tool, ply, previewConnector, settings)
+        drawPreviewGhost(solve)
+    end
 end
 
 function Client.DrawHUD(tool)

@@ -6,7 +6,7 @@ local Utils = Micron.ModeUtils
 local MODE = {}
 
 MODE.DisplayName = "Move"
-MODE.Description = "Snap source to target."
+MODE.Description = "Snap source to target or world."
 MODE.LatchDuplicateOnSource = true
 MODE.AllowSelfTargetWhenDuplicating = true
 MODE.RotationAxisNames = {
@@ -45,22 +45,16 @@ end
 
 function MODE.BuildConnector(ply, trace, settings)
     settings = settings or {}
-    return Utils.BuildConnectorFromTrace(trace, settings, "World geometry cannot be selected as a movable connector.")
-end
-
-function MODE.StepRotation(state, axisIndex)
-    if not state.rotation then
-        state.rotation = {0, 0, 0}
-    end
-
-    axisIndex = math.Clamp(axisIndex or 1, 1, 3)
-    state.rotation[axisIndex] = Math.WrapRightAngle((state.rotation[axisIndex] or 0) + 90)
-
-    return state.rotation[axisIndex], MODE.RotationAxisNames[axisIndex]
-end
-
-function MODE.ResetRotation(state)
-    state.rotation = {0, 0, 0}
+    local allowWorldTarget = IsValid(ply) and ply:GetNW2Bool("Micron.HasSource", false)
+    return Utils.BuildConnectorFromTrace(
+        trace,
+        settings,
+        "Select a source first before targeting world geometry.",
+        {
+            allowWorld = allowWorldTarget,
+            player = ply
+        }
+    )
 end
 
 function MODE.Solve(sourceConnector, targetConnector, settings, state)
@@ -103,19 +97,12 @@ function MODE.Solve(sourceConnector, targetConnector, settings, state)
     return {
         entity = srcEnt,
         position = finalPos,
-        angles = finalAng,
-        debug = {
-            worldForward = worldForward,
-            worldUp = worldUp,
-            worldLeft = worldLeft,
-            targetNormal = targetNormal,
-            desiredNormal = desiredNormal
-        }
+        angles = finalAng
     }
 end
 
 if CLIENT then
-    MODE.PanelClass = "MicronModeFaceSnapPanel"
+    MODE.PanelClass = "MicronModeMovePanel"
 
     local PANEL = {}
 
@@ -124,7 +111,6 @@ if CLIENT then
 
         local scroll = vgui.Create("DScrollPanel", self)
         scroll:Dock(FILL)
-        self.Scroll = scroll
 
         local transformForm = vgui.Create("DForm", scroll)
         transformForm:Dock(TOP)
@@ -183,6 +169,7 @@ if CLIENT then
         keybindForm:Help("Ctrl+R: reverse")
         keybindForm:Help("RMB: flip normal")
         keybindForm:Help("Shift+LMB: duplicate")
+        keybindForm:Help("Target can be world (no snap)")
         keybindForm:Help("Use+RMB: clear selection")
     end
 

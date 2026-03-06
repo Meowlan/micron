@@ -78,11 +78,29 @@ end
 if CLIENT then
 	language.Add("tool." .. FileName .. ".name", "Micron")
 	language.Add("tool." .. FileName .. ".desc", "")
-	language.Add("tool." .. FileName .. ".0", "LMB: pick/apply | Shift+LMB: duplicate | RMB: option | R: rotate (Shift/Alt axis)")
+	language.Add("tool." .. FileName .. ".0", "Read the mode descriptions for instructions on how to use each mode.")
 end
 
 local function getController()
 	return Micron and Micron.Controller
+end
+
+local function callController(actionName, tool, trace)
+	if CLIENT then
+		return true
+	end
+
+	local controller = getController()
+	if not controller then
+		return false
+	end
+
+	local action = controller[actionName]
+	if not isfunction(action) then
+		return false
+	end
+
+	return action(tool, trace)
 end
 
 local function getRenderHookId(tool)
@@ -112,6 +130,13 @@ end
 function TOOL:Deploy()
 	if CLIENT then
 		attachRenderHook(self)
+
+		local snapEnabledConVar = GetConVar("snap_enabled")
+		self._micronRestoreSnapEnabled = false
+		if snapEnabledConVar and snapEnabledConVar:GetBool() then
+			self._micronRestoreSnapEnabled = true
+			RunConsoleCommand("snap_enabled", "0")
+		end
 	end
 
 	return true
@@ -120,6 +145,11 @@ end
 function TOOL:Holster()
 	if CLIENT then
 		hook.Remove("PostDrawOpaqueRenderables", getRenderHookId(self))
+
+		if self._micronRestoreSnapEnabled then
+			RunConsoleCommand("snap_enabled", "1")
+		end
+		self._micronRestoreSnapEnabled = false
 	end
 
 	if SERVER then
@@ -133,37 +163,23 @@ function TOOL:Holster()
 end
 
 function TOOL:LeftClick(trace)
-	if CLIENT then return true end
-
-	local controller = getController()
-	if not controller then return false end
-
-	return controller.LeftClick(self, trace)
+	return callController("LeftClick", self, trace)
 end
 
 function TOOL:RightClick(trace)
-	if CLIENT then return true end
-
-	local controller = getController()
-	if not controller then return false end
-
-	return controller.RightClick(self, trace)
+	return callController("RightClick", self, trace)
 end
 
 function TOOL:Reload(trace)
-	if CLIENT then return true end
-
-	local controller = getController()
-	if not controller then return false end
-
-	return controller.Reload(self, trace)
+	return callController("Reload", self, trace)
 end
 
 function TOOL:Think()
 	if CLIENT then
 		local hookId = getRenderHookId(self)
-		local hooks = hook.GetTable().PostDrawOpaqueRenderables
-		if not hooks or not hooks[hookId] then
+		local hookTable = hook.GetTable()
+		local renderHooks = hookTable and hookTable.PostDrawOpaqueRenderables or nil
+		if not renderHooks or not renderHooks[hookId] then
 			attachRenderHook(self)
 		end
 	end
@@ -187,5 +203,7 @@ function TOOL:DrawHUD()
 end
 
 function TOOL.BuildCPanel(panel)
-	Micron.CPanel.Build(panel)
+	if Micron and Micron.CPanel and Micron.CPanel.Build then
+		Micron.CPanel.Build(panel)
+	end
 end

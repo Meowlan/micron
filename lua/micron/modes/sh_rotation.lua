@@ -16,7 +16,7 @@ MODE.RotationAxisNames = {
 }
 MODE.ClientConVarDefaults = {
     reverse_axis = "0",
-    grid_subdivisions = "6",
+    grid_subdivisions = "4",
     rot_snap = "90",
     local_rot_n = "0",
     local_rot_u = "0",
@@ -40,10 +40,15 @@ end
 
 function MODE.BuildConnector(ply, trace, settings)
     settings = settings or {}
-    return Utils.BuildConnectorFromTrace(trace, settings, "World geometry cannot be selected as a connector in rotation mode.")
+    return Utils.BuildConnectorFromTrace(
+        trace,
+        settings,
+        "World geometry cannot be selected as a connector in rotation mode.",
+        { player = ply }
+    )
 end
 
-function MODE.Solve(sourceConnector, targetConnector, settings, state)
+function MODE.Solve(sourceConnector, _, settings, state)
     if not sourceConnector then
         return nil, "Missing source connector."
     end
@@ -76,7 +81,6 @@ function MODE.Solve(sourceConnector, targetConnector, settings, state)
 
     local finalAng = Math.BasisToWorldAngle(worldForward, worldLeft, worldUp)
 
-    -- Keep the selected pivot world position fixed while updating source orientation.
     local pivotWorld = sourceConnector.hitPosWorld or srcEnt:LocalToWorld(sourceConnector.localPos)
     local connectorOffsetWorld = Math.MapLocalVectorToWorld(sourceConnector.localPos, srcBasis, desiredBasis)
     local finalPos = pivotWorld - connectorOffsetWorld
@@ -84,11 +88,7 @@ function MODE.Solve(sourceConnector, targetConnector, settings, state)
     return {
         entity = srcEnt,
         position = finalPos,
-        angles = finalAng,
-        debug = {
-            pivotWorld = pivotWorld,
-            desiredNormal = desiredBasis.n
-        }
+        angles = finalAng
     }
 end
 

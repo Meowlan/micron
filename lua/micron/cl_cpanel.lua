@@ -12,7 +12,7 @@ local function safeModeIdFromConVar()
         return modeId
     end
 
-    return Registry.FirstId()
+    return Registry.FirstId() or ""
 end
 
 local function buildModeCombo(parent)
@@ -94,6 +94,11 @@ function CPanel.Build(panel)
     local combo = buildModeCombo(panel)
 
     local ids = Registry.ListIds()
+    if #ids == 0 then
+        panel:Help("No Micron modes are currently available.")
+        return
+    end
+
     for _, modeId in ipairs(ids) do
         local modeDef = Registry.Get(modeId)
         combo:AddChoice(modeDef.DisplayName or modeId, modeId)
@@ -108,7 +113,7 @@ function CPanel.Build(panel)
     state.modeHost = addModeHost(panel)
 
     state.currentModeId = safeModeIdFromConVar()
-    if state.currentModeId then
+    if state.currentModeId ~= "" then
         local activeMode = Registry.Get(state.currentModeId)
         if activeMode then
             combo:SetValue(activeMode.DisplayName or state.currentModeId)
