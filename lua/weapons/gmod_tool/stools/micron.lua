@@ -1,0 +1,189 @@
+local FileName = "micron"
+
+TOOL.Category = "Construction"
+TOOL.Name = "#tool." .. FileName .. ".name"
+TOOL.Command = nil
+TOOL.ConfigName = ""
+
+TOOL.ClientConVar = {
+	mode = ""
+}
+
+local function sortedFileList(pattern)
+	local files = file.Find(pattern, "LUA") or {}
+	table.sort(files)
+	return files
+end
+
+local function includeModeFiles()
+	local modeRoot = "micron/modes/"
+	local shared = sortedFileList(modeRoot .. "sh_*.lua")
+	local client = sortedFileList(modeRoot .. "cl_*.lua")
+	local server = sortedFileList(modeRoot .. "sv_*.lua")
+
+	if SERVER then
+		for _, name in ipairs(shared) do
+			AddCSLuaFile(modeRoot .. name)
+		end
+
+		for _, name in ipairs(client) do
+			AddCSLuaFile(modeRoot .. name)
+		end
+	end
+
+	for _, name in ipairs(shared) do
+		include(modeRoot .. name)
+	end
+
+	if CLIENT then
+		for _, name in ipairs(client) do
+			include(modeRoot .. name)
+		end
+	end
+
+	if SERVER then
+		for _, name in ipairs(server) do
+			include(modeRoot .. name)
+		end
+	end
+end
+
+if SERVER then
+	AddCSLuaFile("micron/sh_math.lua")
+	AddCSLuaFile("micron/sh_snap_points.lua")
+	AddCSLuaFile("micron/sh_mode_registry.lua")
+	AddCSLuaFile("micron/cl_cpanel.lua")
+	AddCSLuaFile("micron/cl_hud.lua")
+end
+
+include("micron/sh_math.lua")
+include("micron/sh_snap_points.lua")
+include("micron/sh_mode_registry.lua")
+includeModeFiles()
+
+local defaultModeId = (Micron and Micron.ModeRegistry and Micron.ModeRegistry.FirstId and Micron.ModeRegistry.FirstId()) or ""
+TOOL.ClientConVar.mode = defaultModeId
+
+if SERVER then
+	include("micron/sv_controller.lua")
+end
+
+if CLIENT then
+	include("micron/cl_cpanel.lua")
+	include("micron/cl_hud.lua")
+end
+
+if CLIENT then
+	language.Add("tool." .. FileName .. ".name", "Micron")
+	language.Add("tool." .. FileName .. ".desc", "")
+	language.Add("tool." .. FileName .. ".0", "LMB: pick source/apply | Shift+LMB: duplicate+apply | RMB: invert axis | R: rotate by snap step (Shift/Alt change axis)")
+end
+
+local function getController()
+	return Micron and Micron.Controller
+end
+
+local function getRenderHookId(tool)
+	if not tool then
+		return "Micron.Render"
+	end
+
+	local owner = tool:GetOwner()
+	if IsValid(owner) then
+		return "Micron.Render." .. owner:EntIndex()
+	end
+
+	return "Micron.Render"
+end
+
+local function attachRenderHook(tool)
+	local hookId = getRenderHookId(tool)
+	hook.Add("PostDrawOpaqueRenderables", hookId, function()
+		if not Micron or not Micron.Client or not Micron.Client.RenderWorld then
+			return
+		end
+
+		tool:Render()
+	end)
+end
+
+function TOOL:Deploy()
+	if CLIENT then
+		attachRenderHook(self)
+	end
+
+	return true
+end
+
+function TOOL:Holster()
+	if CLIENT then
+		hook.Remove("PostDrawOpaqueRenderables", getRenderHookId(self))
+	end
+
+	if SERVER then
+		local controller = getController()
+		if controller then
+			controller.ResetPlayerState(self:GetOwner())
+		end
+	end
+
+	return true
+end
+
+function TOOL:LeftClick(trace)
+	if CLIENT then return true end
+
+	local controller = getController()
+	if not controller then return false end
+
+	return controller.LeftClick(self, trace)
+end
+
+function TOOL:RightClick(trace)
+	if CLIENT then return true end
+
+	local controller = getController()
+	if not controller then return false end
+
+	return controller.RightClick(self, trace)
+end
+
+function TOOL:Reload(trace)
+	if CLIENT then return true end
+
+	local controller = getController()
+	if not controller then return false end
+
+	return controller.Reload(self, trace)
+end
+
+function TOOL:Think()
+	if CLIENT then
+		local hookId = getRenderHookId(self)
+		local hooks = hook.GetTable().PostDrawOpaqueRenderables
+		if not hooks or not hooks[hookId] then
+			attachRenderHook(self)
+		end
+	end
+end
+
+function TOOL:Render()
+	if not Micron or not Micron.Client or not Micron.Client.RenderWorld then
+		return
+	end
+
+	render.SetColorMaterial()
+	Micron.Client.RenderWorld(self)
+end
+
+function TOOL:DrawHUD()
+	if not Micron or not Micron.Client or not Micron.Client.DrawHUD then
+		return
+	end
+
+	Micron.Client.DrawHUD(self)
+end
+
+function TOOL.BuildCPanel(panel)
+	Micron.CPanel.Build(panel)
+end

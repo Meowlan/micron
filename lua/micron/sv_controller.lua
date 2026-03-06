@@ -1,0 +1,411 @@
+Micron = Micron or {}
+Micron.Controller = Micron.Controller or {}
+
+local Controller = Micron.Controller
+local Registry = Micron.ModeRegistry
+local Math = Micron.Math
+
+Controller._states = Controller._states or setmetatable({}, { __mode = "k" })
+
+local function getModeId(tool)
+    local requested = tool:GetClientInfo("mode")
+    if requested and requested ~= "" and Registry.Get(requested) then
+        return requested
+    end
+
+    return Registry.FirstId()
+end
+
+local function getState(ply)
+    local state = Controller._states[ply]
+    if state then
+        return state
+    end
+
+    state = {
+        modeId = nil,
+        source = nil
+    }
+
+    Controller._states[ply] = state
+    return state
+end
+
+local function updateClientState(ply, state)
+    if not IsValid(ply) then return end
+
+    local hasSource = state and state.source and IsValid(state.source.entity)
+    ply:SetNW2Bool("Micron.HasSource", hasSource and true or false)
+
+    if hasSource then
+        local ent = state.source.entity
+        local worldPos = ent:LocalToWorld(state.source.localPos)
+        local worldNormal = Math.LocalDirToWorld(ent, state.source.localBasis.n)
+
+        ply:SetNW2Vector("Micron.SourcePos", worldPos)
+        ply:SetNW2Vector("Micron.SourceNormal", worldNormal)
+        ply:SetNW2Entity("Micron.SourceEnt", ent)
+        ply:SetNW2Vector("Micron.SourceLocalPos", state.source.localPos)
+        ply:SetNW2Vector("Micron.SourceLocalN", state.source.localBasis.n)
+        ply:SetNW2Vector("Micron.SourceLocalU", state.source.localBasis.u)
+        ply:SetNW2String("Micron.SourceMode", state.modeId or "")
+    else
+        ply:SetNW2Vector("Micron.SourcePos", vector_origin)
+        ply:SetNW2Vector("Micron.SourceNormal", vector_origin)
+        ply:SetNW2Entity("Micron.SourceEnt", NULL)
+        ply:SetNW2Vector("Micron.SourceLocalPos", vector_origin)
+        ply:SetNW2Vector("Micron.SourceLocalN", vector_origin)
+        ply:SetNW2Vector("Micron.SourceLocalU", vector_origin)
+        ply:SetNW2String("Micron.SourceMode", "")
+    end
+end
+
+local function resetState(ply)
+    local state = getState(ply)
+    state.source = nil
+    updateClientState(ply, state)
+end
+
+local function getModeSettings(mode, tool)
+    if mode and mode.GetSettings then
+        local settings = mode.GetSettings(tool)
+        if istable(settings) then
+            return settings
+        end
+    end
+
+    return {}
+end
+
+local function ensureModeState(tool, ply)
+    local state = getState(ply)
+    local modeId = getModeId(tool)
+
+    if modeId ~= state.modeId then
+        state.modeId = modeId
+        state.source = nil
+    end
+
+    local mode = Registry.Get(modeId)
+    return mode, state
+end
+
+local function createUndoForMove(ply, ent, oldPos, oldAng, oldMotionEnabled, createdConstraints, removeEntityOnUndo)
+    undo.Create("Micron Snap")
+    undo.SetPlayer(ply)
+
+    if removeEntityOnUndo and IsValid(ent) then
+        undo.AddEntity(ent)
+        cleanup.Add(ply, "props", ent)
+    end
+
+    if createdConstraints then
+        for _, created in ipairs(createdConstraints) do
+            if IsValid(created) then
+                undo.AddEntity(created)
+                cleanup.Add(ply, "constraints", created)
+            end
+        end
+    end
+
+    if not removeEntityOnUndo then
+        undo.AddFunction(function(_, movedEnt, revertPos, revertAng)
+            if not IsValid(movedEnt) then return end
+
+            movedEnt:SetAngles(revertAng)
+            movedEnt:SetPos(revertPos)
+
+            local phys = movedEnt:GetPhysicsObject()
+            if IsValid(phys) then
+                phys:SetAngles(revertAng)
+                phys:SetPos(revertPos)
+                if oldMotionEnabled ~= nil then
+                    phys:EnableMotion(oldMotionEnabled)
+                end
+                phys:Wake()
+            end
+        end, ent, oldPos, oldAng)
+    end
+
+    undo.Finish()
+end
+
+local function duplicateEntityForSnap(ply, sourceEnt)
+    if not IsValid(sourceEnt) then
+        return nil, "Source entity is invalid."
+    end
+
+    local ok, entTable = pcall(duplicator.CopyEntTable, sourceEnt)
+    if ok and istable(entTable) then
+        local createOk, created = pcall(duplicator.CreateEntityFromTable, ply, entTable)
+        if createOk and IsValid(created) then
+            created:SetPos(sourceEnt:GetPos())
+            created:SetAngles(sourceEnt:GetAngles())
+            created:Activate()
+            return created
+        end
+    end
+
+    local className = sourceEnt:GetClass()
+    local modelName = sourceEnt:GetModel()
+    if not className or className == "" or not modelName or modelName == "" then
+        return nil, "Source entity cannot be duplicated."
+    end
+
+    local created = ents.Create(className)
+    if not IsValid(created) then
+        return nil, "Failed to create duplicated entity."
+    end
+
+    created:SetModel(modelName)
+    created:SetPos(sourceEnt:GetPos())
+    created:SetAngles(sourceEnt:GetAngles())
+    created:Spawn()
+    created:Activate()
+
+    if created.SetSkin and sourceEnt.GetSkin then
+        created:SetSkin(sourceEnt:GetSkin() or 0)
+    end
+
+    if created.SetMaterial and sourceEnt.GetMaterial then
+        created:SetMaterial(sourceEnt:GetMaterial() or "")
+    end
+
+    if created.SetColor and sourceEnt.GetColor then
+        created:SetColor(sourceEnt:GetColor())
+    end
+
+    if created.SetRenderMode and sourceEnt.GetRenderMode then
+        created:SetRenderMode(sourceEnt:GetRenderMode())
+    end
+
+    if created.SetRenderFX and sourceEnt.GetRenderFX then
+        created:SetRenderFX(sourceEnt:GetRenderFX())
+    end
+
+    if created.SetModelScale and sourceEnt.GetModelScale then
+        created:SetModelScale(sourceEnt:GetModelScale(), 0)
+    end
+
+    if created.SetCollisionGroup and sourceEnt.GetCollisionGroup then
+        created:SetCollisionGroup(sourceEnt:GetCollisionGroup())
+    end
+
+    if created.GetNumBodyGroups and sourceEnt.GetNumBodyGroups and created.SetBodygroup and sourceEnt.GetBodygroup then
+        local count = math.max(0, sourceEnt:GetNumBodyGroups() - 1)
+        for i = 0, count do
+            created:SetBodygroup(i, sourceEnt:GetBodygroup(i))
+        end
+    end
+
+    cleanup.Add(ply, "props", created)
+    return created
+end
+
+local function applyPostSnapOptions(sourceConnector, targetConnector, settings)
+    local sourceEnt = sourceConnector.entity
+    local targetEnt = targetConnector.entity
+    local created = {}
+
+    if settings.freezeProp then
+        local phys = sourceEnt:GetPhysicsObject()
+        if IsValid(phys) then
+            phys:EnableMotion(false)
+            phys:Wake()
+        end
+    end
+
+    if settings.weldProp then
+        local weld = constraint.Weld(sourceEnt, targetEnt, 0, 0, 0, false, false)
+        if IsValid(weld) then
+            created[#created + 1] = weld
+        end
+    end
+
+    if settings.nocollidePair then
+        local nocollide = constraint.NoCollide(sourceEnt, targetEnt, 0, 0)
+        if IsValid(nocollide) then
+            created[#created + 1] = nocollide
+        end
+    end
+
+    return created
+end
+
+function Controller.LeftClick(tool, trace)
+    local ply = tool:GetOwner()
+    if not IsValid(ply) then return false end
+
+    local mode, state = ensureModeState(tool, ply)
+    if not mode then
+        return false
+    end
+
+    local settings = getModeSettings(mode, tool)
+
+    if not state.source then
+        local sourceConnector = mode.BuildConnector(ply, trace, settings)
+        if not sourceConnector then
+            return false
+        end
+
+        state.source = sourceConnector
+
+        updateClientState(ply, state)
+        return true
+    end
+
+    local targetConnector = mode.BuildConnector(ply, trace, settings)
+    if not targetConnector then
+        return false
+    end
+
+    if not IsValid(state.source.entity) then
+        resetState(ply)
+        return false
+    end
+
+    if state.source.entity == targetConnector.entity then
+        return false
+    end
+
+    local solve = mode.Solve(state.source, targetConnector, settings, { rotation = {0, 0, 0} })
+    if not solve then
+        return false
+    end
+
+    local sourceEnt = solve.entity
+    if not IsValid(sourceEnt) then
+        resetState(ply)
+        return false
+    end
+
+    local shouldDuplicate = ply:KeyDown(IN_SPEED)
+    local ent = sourceEnt
+
+    if shouldDuplicate then
+        local duplicated = duplicateEntityForSnap(ply, sourceEnt)
+        if not IsValid(duplicated) then
+            return false
+        end
+
+        ent = duplicated
+    end
+
+    local oldPos = ent:GetPos()
+    local oldAng = ent:GetAngles()
+    local oldMotionEnabled = nil
+
+    local phys = ent:GetPhysicsObject()
+    if IsValid(phys) then
+        oldMotionEnabled = phys:IsMotionEnabled()
+    end
+
+    ent:SetAngles(solve.angles)
+    ent:SetPos(solve.position)
+
+    phys = ent:GetPhysicsObject()
+    if IsValid(phys) then
+        phys:SetAngles(solve.angles)
+        phys:SetPos(solve.position)
+        phys:Wake()
+    end
+
+    local sourceConnectorForPost = {
+        entity = ent,
+        localPos = state.source.localPos
+    }
+
+    local createdConstraints = applyPostSnapOptions(sourceConnectorForPost, targetConnector, settings)
+
+    createUndoForMove(ply, ent, oldPos, oldAng, oldMotionEnabled, createdConstraints, shouldDuplicate)
+
+    resetState(ply)
+    return true
+end
+
+function Controller.RightClick(tool)
+    local ply = tool:GetOwner()
+    if not IsValid(ply) then return false end
+
+    local mode, state = ensureModeState(tool, ply)
+
+    if ply:KeyDown(IN_USE) then
+        resetState(ply)
+        return true
+    end
+
+    local settings = getModeSettings(mode, tool)
+    if mode and mode.OnRightClick then
+        local handled = mode.OnRightClick(tool, ply, state, settings)
+        if handled ~= nil then
+            return handled and true or false
+        end
+    end
+
+    return false
+end
+
+local function resolveRotationAxis(ply)
+    if ply:KeyDown(IN_WALK) then
+        return 3
+    end
+
+    if ply:KeyDown(IN_SPEED) then
+        return 2
+    end
+
+    return 1
+end
+
+function Controller.RotateFromInput(tool)
+    local ply = tool:GetOwner()
+    if not IsValid(ply) then return false end
+
+    local mode, state = ensureModeState(tool, ply)
+    if not mode then
+        return false
+    end
+
+    local settings = getModeSettings(mode, tool)
+    local axis = resolveRotationAxis(ply)
+    if mode.OnRotateInput then
+        local handled = mode.OnRotateInput(tool, ply, state, settings, axis)
+        if handled ~= nil then
+            return handled and true or false
+        end
+    end
+
+    return false
+end
+
+function Controller.ResetPlayerState(ply)
+    if not IsValid(ply) then return end
+
+    Controller._states[ply] = nil
+    ply:SetNW2Bool("Micron.HasSource", false)
+    ply:SetNW2Vector("Micron.SourcePos", vector_origin)
+    ply:SetNW2Vector("Micron.SourceNormal", vector_origin)
+    ply:SetNW2Entity("Micron.SourceEnt", NULL)
+    ply:SetNW2Vector("Micron.SourceLocalPos", vector_origin)
+    ply:SetNW2Vector("Micron.SourceLocalN", vector_origin)
+    ply:SetNW2Vector("Micron.SourceLocalU", vector_origin)
+    ply:SetNW2String("Micron.SourceMode", "")
+end
+
+hook.Add("PlayerDisconnected", "Micron.ControllerCleanup", function(ply)
+    if not Micron or not Micron.Controller or not Micron.Controller.ResetPlayerState then
+        return
+    end
+
+    Micron.Controller.ResetPlayerState(ply)
+end)
+
+function Controller.Reload(tool)
+    if not tool or not tool.GetOwner then
+        return false
+    end
+
+    Controller.RotateFromInput(tool)
+    return false
+end
