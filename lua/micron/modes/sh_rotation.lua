@@ -6,13 +6,13 @@ local Utils = Micron.ModeUtils
 local MODE = {}
 
 MODE.DisplayName = "Rotation"
-MODE.Description = "Select a pivot snap point, adjust rotation, then confirm with a second click."
+MODE.Description = "Pick pivot, rotate, click again."
 MODE.RequiresTargetConnector = false
 MODE.LatchDuplicateOnSource = true
 MODE.RotationAxisNames = {
-    "Pivot Normal",
-    "Pivot Tangent",
-    "Pivot Bitangent"
+    "Normal",
+    "Tangent",
+    "Bitangent"
 }
 MODE.ClientConVarDefaults = {
     reverse_axis = "0",
@@ -21,9 +21,9 @@ MODE.ClientConVarDefaults = {
     local_rot_n = "0",
     local_rot_u = "0",
     local_rot_v = "0",
-    freeze_prop = "0",
+    freeze_prop = "1",
     weld_prop = "0",
-    nocollide_pair = "0"
+    nocollide_pair = "1"
 }
 
 function MODE.GetSettings(tool)
@@ -107,42 +107,54 @@ if CLIENT then
         local transformForm = vgui.Create("DForm", scroll)
         transformForm:Dock(TOP)
         transformForm:SetName("Rotation")
-        transformForm:Help("Select pivot once, adjust with R/Shift+R/Alt+R and sliders, then click again to apply")
+        transformForm:Help("Pick pivot, rotate, click again")
 
-        transformForm:NumSlider("Grid Subdivisions", "micron_grid_subdivisions", 1, 16, 0)
-        local snapSlider = transformForm:NumSlider("Rotation Snap Step", "micron_rot_snap", 0, 180, 0)
+        transformForm:NumSlider("Grid", "micron_grid_subdivisions", 1, 16, 0)
+        local snapSlider = transformForm:NumSlider("Rotate Step", "micron_rot_snap", 0, 180, 0)
         snapSlider.OnValueChanged = function(_, value)
             local snapped = math.Clamp(math.Round(value / 15) * 15, 0, 180)
             if math.abs(snapped - value) > 0.001 then
                 RunConsoleCommand("micron_rot_snap", tostring(snapped))
             end
         end
+        Utils.AttachSectionResetButton(transformForm, MODE.ClientConVarDefaults, {
+            "grid_subdivisions",
+            "rot_snap"
+        })
 
         local localRotForm = vgui.Create("DForm", scroll)
         localRotForm:Dock(TOP)
-        localRotForm:SetName("Local Rotation")
+        localRotForm:SetName("Local")
 
-        localRotForm:NumSlider("Pivot Normal", "micron_local_rot_n", -360, 360, 2)
-        localRotForm:NumSlider("Pivot Tangent", "micron_local_rot_u", -360, 360, 2)
-        localRotForm:NumSlider("Pivot Bitangent", "micron_local_rot_v", -360, 360, 2)
+        localRotForm:NumSlider("Normal", "micron_local_rot_n", -360, 360, 2)
+        localRotForm:NumSlider("Tangent", "micron_local_rot_u", -360, 360, 2)
+        localRotForm:NumSlider("Bitangent", "micron_local_rot_v", -360, 360, 2)
+        Utils.AttachSectionResetButton(localRotForm, MODE.ClientConVarDefaults, {
+            "local_rot_n",
+            "local_rot_u",
+            "local_rot_v"
+        })
 
         local actionForm = vgui.Create("DForm", scroll)
         actionForm:Dock(TOP)
-        actionForm:SetName("Actions")
+        actionForm:SetName("Options")
 
-        actionForm:CheckBox("Freeze Source Prop", "micron_freeze_prop")
+        actionForm:CheckBox("Freeze", "micron_freeze_prop")
+        Utils.AttachSectionResetButton(actionForm, MODE.ClientConVarDefaults, {
+            "freeze_prop"
+        })
 
         local keybindForm = vgui.Create("DForm", scroll)
         keybindForm:Dock(TOP)
         keybindForm:SetName("Keybinds")
-        keybindForm:Help("LMB #1: select source pivot snap point")
-        keybindForm:Help("LMB #2: confirm/apply current rotation")
-        keybindForm:Help("R: rotate around pivot normal using snap step")
-        keybindForm:Help("Shift+R: rotate around pivot tangent")
-        keybindForm:Help("Alt+R: rotate around pivot bitangent")
-        keybindForm:Help("Hold Ctrl with R/Shift+R/Alt+R to rotate in reverse")
-        keybindForm:Help("Shift+LMB #1 or #2: duplicate on apply")
-        keybindForm:Help("+USE + RMB: reset source selection")
+        keybindForm:Help("LMB #1: pick pivot")
+        keybindForm:Help("LMB #2: apply")
+        keybindForm:Help("R: rotate normal")
+        keybindForm:Help("Shift+R: rotate tangent")
+        keybindForm:Help("Alt+R: rotate bitangent")
+        keybindForm:Help("Ctrl+R: reverse")
+        keybindForm:Help("Shift+LMB: duplicate")
+        keybindForm:Help("Use+RMB: clear selection")
     end
 
     function PANEL:GetPreferredHeight()

@@ -147,3 +147,48 @@ function Utils.ApplyRotationOffsets(basis, rotation)
 
     return out
 end
+
+if CLIENT then
+    local function resetConVarsToDefaults(defaults, keys)
+        if not istable(defaults) or not istable(keys) then
+            return
+        end
+
+        for _, key in ipairs(keys) do
+            local defaultValue = defaults[key]
+            if defaultValue ~= nil then
+                RunConsoleCommand("micron_" .. tostring(key), tostring(defaultValue))
+            end
+        end
+    end
+
+    -- Best effort: attach a small reset button into the category header when possible,
+    -- otherwise add a reset button inside the section body.
+    function Utils.AttachSectionResetButton(form, defaults, keys, label)
+        if not IsValid(form) or not istable(keys) or #keys == 0 then
+            return
+        end
+
+        local buttonLabel = label or "Reset"
+        local onReset = function()
+            resetConVarsToDefaults(defaults, keys)
+        end
+
+        local header = form.Header or form.header or form.m_pHeader
+        if IsValid(header) then
+            local button = vgui.Create("DButton", header)
+            button:Dock(RIGHT)
+            button:DockMargin(4, 2, 6, 2)
+            button:SetWide(60)
+            button:SetText(buttonLabel)
+            button.DoClick = onReset
+            return
+        end
+
+        local button = vgui.Create("DButton", form)
+        button:SetText(buttonLabel)
+        button:SetTall(20)
+        button.DoClick = onReset
+        form:AddItem(button)
+    end
+end

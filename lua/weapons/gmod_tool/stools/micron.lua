@@ -78,7 +78,7 @@ end
 if CLIENT then
 	language.Add("tool." .. FileName .. ".name", "Micron")
 	language.Add("tool." .. FileName .. ".desc", "")
-	language.Add("tool." .. FileName .. ".0", "LMB: pick source/apply | Shift+LMB: duplicate+apply | RMB: invert axis | R: rotate by snap step (Shift/Alt change axis)")
+	language.Add("tool." .. FileName .. ".0", "LMB: pick/apply | Shift+LMB: duplicate | RMB: option | R: rotate (Shift/Alt axis)")
 end
 
 local function getController()

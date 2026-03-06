@@ -186,8 +186,18 @@ local function shouldPreviewDuplicate(ply, mode, sourceConnector)
     end
 
     local shouldDuplicate = ply:KeyDown(IN_SPEED) and true or false
+    local sourceClickDuplicate = sourceConnector and (sourceConnector.duplicateOnApply and true or false) or false
+
+    if mode.DuplicateFromSourceOnly then
+        shouldDuplicate = sourceClickDuplicate
+    end
+
     if mode.LatchDuplicateOnSource and sourceConnector then
-        shouldDuplicate = (sourceConnector.duplicateOnApply and true or false) or shouldDuplicate
+        shouldDuplicate = sourceClickDuplicate or shouldDuplicate
+
+        if mode.DuplicateFromSourceOnly then
+            shouldDuplicate = sourceClickDuplicate
+        end
     end
 
     return shouldDuplicate
@@ -206,6 +216,24 @@ end
 
 if CLIENT and not Client._targetHoloHookInstalled then
     hook.Add("PreDrawHalos", "Micron.TargetHolo", function()
+        local ply = LocalPlayer()
+        if not IsValid(ply) then
+            updateTargetHoloState(nil, false)
+            return
+        end
+
+        local activeWeapon = ply:GetActiveWeapon()
+        if not IsValid(activeWeapon) or activeWeapon:GetClass() ~= "gmod_tool" then
+            updateTargetHoloState(nil, false)
+            return
+        end
+
+        local activeTool = ply.GetTool and ply:GetTool() or nil
+        if not activeTool or activeTool.Mode ~= "micron" then
+            updateTargetHoloState(nil, false)
+            return
+        end
+
         local ent = Client._targetHoloEnt
         if not IsValid(ent) then
             return

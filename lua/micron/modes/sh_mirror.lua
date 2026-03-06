@@ -5,8 +5,8 @@ local Utils = Micron.ModeUtils
 
 local MODE = {}
 
-MODE.DisplayName = "Move"
-MODE.Description = "Snap source to target."
+MODE.DisplayName = "Mirror"
+MODE.Description = "Mirror source to target."
 MODE.LatchDuplicateOnSource = true
 MODE.AllowSelfTargetWhenDuplicating = true
 MODE.RotationAxisNames = {
@@ -27,8 +27,6 @@ MODE.ClientConVarDefaults = {
     nocollide_pair = "1"
 }
 
-local GAP_DISTANCE_BIAS_UNITS = -0.065
-
 function MODE.GetSettings(tool)
     local settings = Utils.GetCommonSettings(tool)
     settings.gap = tonumber(tool:GetClientNumber("gap", 0)) or 0
@@ -43,24 +41,9 @@ function MODE.OnRotateInput(tool, ply, _, settings, axis, direction)
     return Utils.HandleRotateInput(tool, ply, settings, axis, direction)
 end
 
-function MODE.BuildConnector(ply, trace, settings)
+function MODE.BuildConnector(_, trace, settings)
     settings = settings or {}
-    return Utils.BuildConnectorFromTrace(trace, settings, "World geometry cannot be selected as a movable connector.")
-end
-
-function MODE.StepRotation(state, axisIndex)
-    if not state.rotation then
-        state.rotation = {0, 0, 0}
-    end
-
-    axisIndex = math.Clamp(axisIndex or 1, 1, 3)
-    state.rotation[axisIndex] = Math.WrapRightAngle((state.rotation[axisIndex] or 0) + 90)
-
-    return state.rotation[axisIndex], MODE.RotationAxisNames[axisIndex]
-end
-
-function MODE.ResetRotation(state)
-    state.rotation = {0, 0, 0}
+    return Utils.BuildConnectorFromTrace(trace, settings, "World geometry cannot be selected as a mirror connector.")
 end
 
 function MODE.Solve(sourceConnector, targetConnector, settings, state)
@@ -75,7 +58,7 @@ function MODE.Solve(sourceConnector, targetConnector, settings, state)
 
     local targetNormal = targetConnector.worldBasis.n
     local desiredNormal = settings.reverseAxis and targetNormal or -targetNormal
-    local desiredBasis = Math.BuildBasis(desiredNormal, targetConnector.worldBasis.u)
+    local desiredBasis = Math.BuildBasis(desiredNormal, -targetConnector.worldBasis.u)
 
     local stepRotation = state.rotation or {0, 0, 0}
     local localRotation = settings.localRotation or {0, 0, 0}
@@ -88,7 +71,6 @@ function MODE.Solve(sourceConnector, targetConnector, settings, state)
     desiredBasis = Utils.ApplyRotationOffsets(desiredBasis, combinedRotation)
 
     local srcBasis = sourceConnector.localBasis
-
     local worldForward = Math.MapLocalVectorToWorld(Vector(1, 0, 0), srcBasis, desiredBasis)
     local worldLeft = Math.MapLocalVectorToWorld(Vector(0, 1, 0), srcBasis, desiredBasis)
     local worldUp = Math.MapLocalVectorToWorld(Vector(0, 0, 1), srcBasis, desiredBasis)
@@ -96,26 +78,18 @@ function MODE.Solve(sourceConnector, targetConnector, settings, state)
     local finalAng = Math.BasisToWorldAngle(worldForward, worldLeft, worldUp)
 
     local connectorOffsetWorld = Math.MapLocalVectorToWorld(sourceConnector.localPos, srcBasis, desiredBasis)
-    local effectiveGap = (settings.gap or 0) + GAP_DISTANCE_BIAS_UNITS
-    local targetPos = targetConnector.hitPosWorld + targetNormal * effectiveGap
+    local targetPos = targetConnector.hitPosWorld + targetNormal * (settings.gap or 0)
     local finalPos = targetPos - connectorOffsetWorld
 
     return {
         entity = srcEnt,
         position = finalPos,
-        angles = finalAng,
-        debug = {
-            worldForward = worldForward,
-            worldUp = worldUp,
-            worldLeft = worldLeft,
-            targetNormal = targetNormal,
-            desiredNormal = desiredNormal
-        }
+        angles = finalAng
     }
 end
 
 if CLIENT then
-    MODE.PanelClass = "MicronModeFaceSnapPanel"
+    MODE.PanelClass = "MicronModeMirrorPanel"
 
     local PANEL = {}
 
@@ -124,13 +98,11 @@ if CLIENT then
 
         local scroll = vgui.Create("DScrollPanel", self)
         scroll:Dock(FILL)
-        self.Scroll = scroll
 
         local transformForm = vgui.Create("DForm", scroll)
         transformForm:Dock(TOP)
-        transformForm:SetName("Move")
-        transformForm:Help("Snap source to target")
-
+        transformForm:SetName("Mirror")
+        transformForm:Help("Mirror source to target")
         transformForm:NumSlider("Gap", "micron_gap", -64, 64, 2)
         transformForm:NumSlider("Grid", "micron_grid_subdivisions", 1, 16, 0)
         local snapSlider = transformForm:NumSlider("Rotate Step", "micron_rot_snap", 0, 180, 0)
@@ -149,7 +121,6 @@ if CLIENT then
         local localRotForm = vgui.Create("DForm", scroll)
         localRotForm:Dock(TOP)
         localRotForm:SetName("Local")
-
         localRotForm:NumSlider("Normal", "micron_local_rot_n", -360, 360, 2)
         localRotForm:NumSlider("Tangent", "micron_local_rot_u", -360, 360, 2)
         localRotForm:NumSlider("Bitangent", "micron_local_rot_v", -360, 360, 2)
@@ -162,7 +133,6 @@ if CLIENT then
         local actionForm = vgui.Create("DForm", scroll)
         actionForm:Dock(TOP)
         actionForm:SetName("Options")
-
         actionForm:CheckBox("Freeze", "micron_freeze_prop")
         actionForm:CheckBox("Weld", "micron_weld_prop")
         actionForm:CheckBox("No Collide", "micron_nocollide_pair")
@@ -177,20 +147,19 @@ if CLIENT then
         local keybindForm = vgui.Create("DForm", scroll)
         keybindForm:Dock(TOP)
         keybindForm:SetName("Keybinds")
-        keybindForm:Help("R: rotate normal")
-        keybindForm:Help("Shift+R: rotate tangent")
-        keybindForm:Help("Alt+R: rotate bitangent")
+        keybindForm:Help("LMB #1: pick source")
+        keybindForm:Help("LMB #2: pick target + apply")
+        keybindForm:Help("R/Shift+R/Alt+R: rotate axis")
         keybindForm:Help("Ctrl+R: reverse")
-        keybindForm:Help("RMB: flip normal")
         keybindForm:Help("Shift+LMB: duplicate")
-        keybindForm:Help("Use+RMB: clear selection")
+        keybindForm:Help("RMB: flip normal")
     end
 
     function PANEL:GetPreferredHeight()
-        return 620
+        return 590
     end
 
     vgui.Register(MODE.PanelClass, PANEL, "DPanel")
 end
 
-Registry.Register("move", MODE)
+Registry.Register("mirror", MODE)

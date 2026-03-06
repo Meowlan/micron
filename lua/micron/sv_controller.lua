@@ -282,14 +282,34 @@ function Controller.LeftClick(tool, trace)
     local sourceClickDuplicate = state.duplicateOnApply and true or false
     local shouldDuplicate = applyClickDuplicate
     if mode.LatchDuplicateOnSource then
-        state.duplicateOnApply = sourceClickDuplicate or applyClickDuplicate
-        shouldDuplicate = state.duplicateOnApply and true or false
+        if mode.DuplicateFromSourceOnly then
+            state.duplicateOnApply = sourceClickDuplicate
+            shouldDuplicate = sourceClickDuplicate
+        else
+            state.duplicateOnApply = sourceClickDuplicate or applyClickDuplicate
+            shouldDuplicate = state.duplicateOnApply and true or false
+        end
+    elseif mode.DuplicateFromSourceOnly then
+        shouldDuplicate = sourceClickDuplicate
     end
 
     if targetConnector and state.source.entity == targetConnector.entity then
         local allowSelfTarget = mode.AllowSelfTargetWhenDuplicating and shouldDuplicate
         if not allowSelfTarget then
             return false
+        end
+    end
+
+    if mode.Apply then
+        local handled = mode.Apply(tool, ply, state, settings, targetConnector, shouldDuplicate, {
+            duplicateEntityForSnap = duplicateEntityForSnap
+        })
+
+        if handled ~= nil then
+            if handled then
+                resetState(ply)
+            end
+            return handled and true or false
         end
     end
 
