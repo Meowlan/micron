@@ -24,7 +24,8 @@ local function getState(ply)
 
     state = {
         modeId = nil,
-        source = nil
+        source = nil,
+        duplicateOnApply = nil
     }
 
     Controller._states[ply] = state
@@ -49,6 +50,7 @@ local function updateClientState(ply, state)
         ply:SetNW2Vector("Micron.SourceLocalN", state.source.localBasis.n)
         ply:SetNW2Vector("Micron.SourceLocalU", state.source.localBasis.u)
         ply:SetNW2String("Micron.SourceMode", state.modeId or "")
+        ply:SetNW2Bool("Micron.SourceDuplicateOnApply", state.duplicateOnApply and true or false)
     else
         ply:SetNW2Vector("Micron.SourcePos", vector_origin)
         ply:SetNW2Vector("Micron.SourceNormal", vector_origin)
@@ -57,12 +59,14 @@ local function updateClientState(ply, state)
         ply:SetNW2Vector("Micron.SourceLocalN", vector_origin)
         ply:SetNW2Vector("Micron.SourceLocalU", vector_origin)
         ply:SetNW2String("Micron.SourceMode", "")
+        ply:SetNW2Bool("Micron.SourceDuplicateOnApply", false)
     end
 end
 
 local function resetState(ply)
     local state = getState(ply)
     state.source = nil
+    state.duplicateOnApply = nil
     updateClientState(ply, state)
 end
 
@@ -84,6 +88,7 @@ local function ensureModeState(tool, ply)
     if modeId ~= state.modeId then
         state.modeId = modeId
         state.source = nil
+        state.duplicateOnApply = nil
     end
 
     local mode = Registry.Get(modeId)
@@ -204,7 +209,7 @@ end
 
 local function applyPostSnapOptions(sourceConnector, targetConnector, settings)
     local sourceEnt = sourceConnector.entity
-    local targetEnt = targetConnector.entity
+    local targetEnt = targetConnector and targetConnector.entity or nil
     local created = {}
 
     if settings.freezeProp then
@@ -215,14 +220,14 @@ local function applyPostSnapOptions(sourceConnector, targetConnector, settings)
         end
     end
 
-    if settings.weldProp then
+    if settings.weldProp and IsValid(targetEnt) then
         local weld = constraint.Weld(sourceEnt, targetEnt, 0, 0, 0, false, false)
         if IsValid(weld) then
             created[#created + 1] = weld
         end
     end
 
-    if settings.nocollidePair then
+    if settings.nocollidePair and IsValid(targetEnt) then
         local nocollide = constraint.NoCollide(sourceEnt, targetEnt, 0, 0)
         if IsValid(nocollide) then
             created[#created + 1] = nocollide
@@ -250,14 +255,22 @@ function Controller.LeftClick(tool, trace)
         end
 
         state.source = sourceConnector
+        if mode.LatchDuplicateOnSource then
+            state.duplicateOnApply = ply:KeyDown(IN_SPEED) and true or false
+        else
+            state.duplicateOnApply = nil
+        end
 
         updateClientState(ply, state)
         return true
     end
 
-    local targetConnector = mode.BuildConnector(ply, trace, settings)
-    if not targetConnector then
-        return false
+    local targetConnector = nil
+    if mode.RequiresTargetConnector ~= false then
+        targetConnector = mode.BuildConnector(ply, trace, settings)
+        if not targetConnector then
+            return false
+        end
     end
 
     if not IsValid(state.source.entity) then
@@ -265,8 +278,19 @@ function Controller.LeftClick(tool, trace)
         return false
     end
 
-    if state.source.entity == targetConnector.entity then
-        return false
+    local applyClickDuplicate = ply:KeyDown(IN_SPEED) and true or false
+    local sourceClickDuplicate = state.duplicateOnApply and true or false
+    local shouldDuplicate = applyClickDuplicate
+    if mode.LatchDuplicateOnSource then
+        state.duplicateOnApply = sourceClickDuplicate or applyClickDuplicate
+        shouldDuplicate = state.duplicateOnApply and true or false
+    end
+
+    if targetConnector and state.source.entity == targetConnector.entity then
+        local allowSelfTarget = mode.AllowSelfTargetWhenDuplicating and shouldDuplicate
+        if not allowSelfTarget then
+            return false
+        end
     end
 
     local solve = mode.Solve(state.source, targetConnector, settings, { rotation = {0, 0, 0} })
@@ -280,7 +304,6 @@ function Controller.LeftClick(tool, trace)
         return false
     end
 
-    local shouldDuplicate = ply:KeyDown(IN_SPEED)
     local ent = sourceEnt
 
     if shouldDuplicate then
@@ -358,6 +381,14 @@ local function resolveRotationAxis(ply)
     return 1
 end
 
+local function resolveRotationDirection(ply)
+    if ply:KeyDown(IN_DUCK) then
+        return -1
+    end
+
+    return 1
+end
+
 function Controller.RotateFromInput(tool)
     local ply = tool:GetOwner()
     if not IsValid(ply) then return false end
@@ -369,8 +400,9 @@ function Controller.RotateFromInput(tool)
 
     local settings = getModeSettings(mode, tool)
     local axis = resolveRotationAxis(ply)
+    local direction = resolveRotationDirection(ply)
     if mode.OnRotateInput then
-        local handled = mode.OnRotateInput(tool, ply, state, settings, axis)
+        local handled = mode.OnRotateInput(tool, ply, state, settings, axis, direction)
         if handled ~= nil then
             return handled and true or false
         end
@@ -391,6 +423,7 @@ function Controller.ResetPlayerState(ply)
     ply:SetNW2Vector("Micron.SourceLocalN", vector_origin)
     ply:SetNW2Vector("Micron.SourceLocalU", vector_origin)
     ply:SetNW2String("Micron.SourceMode", "")
+    ply:SetNW2Bool("Micron.SourceDuplicateOnApply", false)
 end
 
 hook.Add("PlayerDisconnected", "Micron.ControllerCleanup", function(ply)

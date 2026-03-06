@@ -11,6 +11,8 @@ local targetColor = Color(255, 140, 90, 255)
 local gridColor = Color(120, 235, 255, 145)
 local outlineColor = Color(155, 245, 255, 210)
 local selectedSnapColor = Color(255, 225, 130, 255)
+local targetHoloColor = Color(120, 210, 245, 170)
+local targetHoloDuplicateColor = Color(255, 185, 110, 190)
 
 local DEFAULT_LOCAL_N = Vector(0, 0, 1)
 local DEFAULT_LOCAL_U = Vector(1, 0, 0)
@@ -107,7 +109,8 @@ local function getSourceConnectorFromState(ply)
         localPos = localPos,
         localBasis = localBasis,
         worldBasis = worldBasis,
-        hitPosWorld = sourceEnt:LocalToWorld(localPos)
+        hitPosWorld = sourceEnt:LocalToWorld(localPos),
+        duplicateOnApply = ply:GetNW2Bool("Micron.SourceDuplicateOnApply", false)
     }
 end
 
@@ -115,6 +118,15 @@ local function computePreviewSolve(tool, ply, sourceConnector, settings)
     local mode = getActiveMode(settings)
     if not mode or not mode.BuildConnector or not mode.Solve then
         return nil
+    end
+
+    if mode.RequiresTargetConnector == false then
+        local solve = mode.Solve(sourceConnector, nil, settings, { rotation = {0, 0, 0} })
+        if not solve then
+            return nil
+        end
+
+        return solve
     end
 
     local trace = ply:GetEyeTrace()
@@ -128,7 +140,16 @@ local function computePreviewSolve(tool, ply, sourceConnector, settings)
     end
 
     if targetConnector.entity == sourceConnector.entity then
-        return nil
+        local shouldDuplicate = ply:KeyDown(IN_SPEED) and true or false
+        local sourceClickDuplicate = sourceConnector.duplicateOnApply and true or false
+        if mode.LatchDuplicateOnSource then
+            shouldDuplicate = sourceClickDuplicate or shouldDuplicate
+        end
+
+        local allowSelfTarget = mode.AllowSelfTargetWhenDuplicating and shouldDuplicate
+        if not allowSelfTarget then
+            return nil
+        end
     end
 
     local solve = mode.Solve(sourceConnector, targetConnector, settings, { rotation = {0, 0, 0} })
@@ -159,11 +180,58 @@ local function drawPreviewGhost(solve)
     render.SetBlend(1)
 end
 
+local function shouldPreviewDuplicate(ply, mode, sourceConnector)
+    if not mode then
+        return false
+    end
+
+    local shouldDuplicate = ply:KeyDown(IN_SPEED) and true or false
+    if mode.LatchDuplicateOnSource and sourceConnector then
+        shouldDuplicate = (sourceConnector.duplicateOnApply and true or false) or shouldDuplicate
+    end
+
+    return shouldDuplicate
+end
+
+local function updateTargetHoloState(ent, isDuplicate)
+    if not IsValid(ent) then
+        Client._targetHoloEnt = nil
+        Client._targetHoloColor = nil
+        return
+    end
+
+    Client._targetHoloEnt = ent
+    Client._targetHoloColor = isDuplicate and targetHoloDuplicateColor or targetHoloColor
+end
+
+if CLIENT and not Client._targetHoloHookInstalled then
+    hook.Add("PreDrawHalos", "Micron.TargetHolo", function()
+        local ent = Client._targetHoloEnt
+        if not IsValid(ent) then
+            return
+        end
+
+        local color = Client._targetHoloColor or targetHoloColor
+        halo.Add({ ent }, color, 3, 3, 3, true, true)
+    end)
+
+    Client._targetHoloHookInstalled = true
+end
+
 function Client.RenderWorld(tool)
     local ply = LocalPlayer()
     if not IsValid(ply) then return end
 
+    updateTargetHoloState(nil, false)
+
     local settings = getToolSettings(tool)
+    local mode = getActiveMode(settings)
+    local sourceConnector = getSourceConnectorFromState(ply)
+
+    if sourceConnector and IsValid(sourceConnector.entity) then
+        local duplicatePreview = shouldPreviewDuplicate(ply, mode, sourceConnector)
+        updateTargetHoloState(sourceConnector.entity, duplicatePreview)
+    end
 
     local trace = ply:GetEyeTrace()
     if trace and trace.Hit then
@@ -178,7 +246,6 @@ function Client.RenderWorld(tool)
         end
     end
 
-    local sourceConnector = getSourceConnectorFromState(ply)
     if not sourceConnector then
         return
     end

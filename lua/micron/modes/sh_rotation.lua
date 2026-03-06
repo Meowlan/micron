@@ -5,17 +5,16 @@ local Utils = Micron.ModeUtils
 
 local MODE = {}
 
-MODE.DisplayName = "Move"
-MODE.Description = "Move the source entity by snapping its selected connector to the target connector."
+MODE.DisplayName = "Rotation"
+MODE.Description = "Select a pivot snap point, adjust rotation, then confirm with a second click."
+MODE.RequiresTargetConnector = false
 MODE.LatchDuplicateOnSource = true
-MODE.AllowSelfTargetWhenDuplicating = true
 MODE.RotationAxisNames = {
-    "Snap Normal",
-    "Tangent",
-    "Bitangent"
+    "Pivot Normal",
+    "Pivot Tangent",
+    "Pivot Bitangent"
 }
 MODE.ClientConVarDefaults = {
-    gap = "0",
     reverse_axis = "0",
     grid_subdivisions = "6",
     rot_snap = "90",
@@ -27,16 +26,12 @@ MODE.ClientConVarDefaults = {
     nocollide_pair = "0"
 }
 
-local GAP_DISTANCE_BIAS_UNITS = -0.065
-
 function MODE.GetSettings(tool)
-    local settings = Utils.GetCommonSettings(tool)
-    settings.gap = tonumber(tool:GetClientNumber("gap", 0)) or 0
-    return settings
+    return Utils.GetCommonSettings(tool)
 end
 
 function MODE.OnRightClick(tool, ply)
-    return Utils.ToggleReverseAxis(tool, ply)
+    return false
 end
 
 function MODE.OnRotateInput(tool, ply, _, settings, axis, direction)
@@ -45,27 +40,12 @@ end
 
 function MODE.BuildConnector(ply, trace, settings)
     settings = settings or {}
-    return Utils.BuildConnectorFromTrace(trace, settings, "World geometry cannot be selected as a movable connector.")
-end
-
-function MODE.StepRotation(state, axisIndex)
-    if not state.rotation then
-        state.rotation = {0, 0, 0}
-    end
-
-    axisIndex = math.Clamp(axisIndex or 1, 1, 3)
-    state.rotation[axisIndex] = Math.WrapRightAngle((state.rotation[axisIndex] or 0) + 90)
-
-    return state.rotation[axisIndex], MODE.RotationAxisNames[axisIndex]
-end
-
-function MODE.ResetRotation(state)
-    state.rotation = {0, 0, 0}
+    return Utils.BuildConnectorFromTrace(trace, settings, "World geometry cannot be selected as a connector in rotation mode.")
 end
 
 function MODE.Solve(sourceConnector, targetConnector, settings, state)
-    if not sourceConnector or not targetConnector then
-        return nil, "Missing source or target connector."
+    if not sourceConnector then
+        return nil, "Missing source connector."
     end
 
     local srcEnt = sourceConnector.entity
@@ -73,9 +53,11 @@ function MODE.Solve(sourceConnector, targetConnector, settings, state)
         return nil, "Source entity is no longer valid."
     end
 
-    local targetNormal = targetConnector.worldBasis.n
-    local desiredNormal = settings.reverseAxis and targetNormal or -targetNormal
-    local desiredBasis = Math.BuildBasis(desiredNormal, targetConnector.worldBasis.u)
+    local desiredBasis = {
+        u = sourceConnector.worldBasis.u,
+        v = sourceConnector.worldBasis.v,
+        n = sourceConnector.worldBasis.n
+    }
 
     local stepRotation = state.rotation or {0, 0, 0}
     local localRotation = settings.localRotation or {0, 0, 0}
@@ -88,34 +70,30 @@ function MODE.Solve(sourceConnector, targetConnector, settings, state)
     desiredBasis = Utils.ApplyRotationOffsets(desiredBasis, combinedRotation)
 
     local srcBasis = sourceConnector.localBasis
-
     local worldForward = Math.MapLocalVectorToWorld(Vector(1, 0, 0), srcBasis, desiredBasis)
     local worldLeft = Math.MapLocalVectorToWorld(Vector(0, 1, 0), srcBasis, desiredBasis)
     local worldUp = Math.MapLocalVectorToWorld(Vector(0, 0, 1), srcBasis, desiredBasis)
 
     local finalAng = Math.BasisToWorldAngle(worldForward, worldLeft, worldUp)
 
+    -- Keep the selected pivot world position fixed while updating source orientation.
+    local pivotWorld = sourceConnector.hitPosWorld or srcEnt:LocalToWorld(sourceConnector.localPos)
     local connectorOffsetWorld = Math.MapLocalVectorToWorld(sourceConnector.localPos, srcBasis, desiredBasis)
-    local effectiveGap = (settings.gap or 0) + GAP_DISTANCE_BIAS_UNITS
-    local targetPos = targetConnector.hitPosWorld + targetNormal * effectiveGap
-    local finalPos = targetPos - connectorOffsetWorld
+    local finalPos = pivotWorld - connectorOffsetWorld
 
     return {
         entity = srcEnt,
         position = finalPos,
         angles = finalAng,
         debug = {
-            worldForward = worldForward,
-            worldUp = worldUp,
-            worldLeft = worldLeft,
-            targetNormal = targetNormal,
-            desiredNormal = desiredNormal
+            pivotWorld = pivotWorld,
+            desiredNormal = desiredBasis.n
         }
     }
 end
 
 if CLIENT then
-    MODE.PanelClass = "MicronModeFaceSnapPanel"
+    MODE.PanelClass = "MicronModeRotationPanel"
 
     local PANEL = {}
 
@@ -128,10 +106,9 @@ if CLIENT then
 
         local transformForm = vgui.Create("DForm", scroll)
         transformForm:Dock(TOP)
-        transformForm:SetName("Move")
-        transformForm:Help("Move source to target connector with precise face snapping")
+        transformForm:SetName("Rotation")
+        transformForm:Help("Select pivot once, adjust with R/Shift+R/Alt+R and sliders, then click again to apply")
 
-        transformForm:NumSlider("Gap Distance", "micron_gap", -64, 64, 2)
         transformForm:NumSlider("Grid Subdivisions", "micron_grid_subdivisions", 1, 16, 0)
         local snapSlider = transformForm:NumSlider("Rotation Snap Step", "micron_rot_snap", 0, 180, 0)
         snapSlider.OnValueChanged = function(_, value)
@@ -145,36 +122,34 @@ if CLIENT then
         localRotForm:Dock(TOP)
         localRotForm:SetName("Local Rotation")
 
-        localRotForm:NumSlider("Normal", "micron_local_rot_n", -360, 360, 2)
-        localRotForm:NumSlider("Tangent", "micron_local_rot_u", -360, 360, 2)
-        localRotForm:NumSlider("Bitangent", "micron_local_rot_v", -360, 360, 2)
+        localRotForm:NumSlider("Pivot Normal", "micron_local_rot_n", -360, 360, 2)
+        localRotForm:NumSlider("Pivot Tangent", "micron_local_rot_u", -360, 360, 2)
+        localRotForm:NumSlider("Pivot Bitangent", "micron_local_rot_v", -360, 360, 2)
 
         local actionForm = vgui.Create("DForm", scroll)
         actionForm:Dock(TOP)
         actionForm:SetName("Actions")
 
         actionForm:CheckBox("Freeze Source Prop", "micron_freeze_prop")
-        actionForm:CheckBox("Weld Source To Target", "micron_weld_prop")
-        actionForm:CheckBox("NoCollide Source/Target", "micron_nocollide_pair")
-        actionForm:CheckBox("Reverse Axis (match face normals)", "micron_reverse_axis")
 
         local keybindForm = vgui.Create("DForm", scroll)
         keybindForm:Dock(TOP)
         keybindForm:SetName("Keybinds")
-        keybindForm:Help("R: rotate around normal using snap step")
-        keybindForm:Help("Shift+R: rotate around tangent")
-        keybindForm:Help("Alt+R: rotate around bitangent")
+        keybindForm:Help("LMB #1: select source pivot snap point")
+        keybindForm:Help("LMB #2: confirm/apply current rotation")
+        keybindForm:Help("R: rotate around pivot normal using snap step")
+        keybindForm:Help("Shift+R: rotate around pivot tangent")
+        keybindForm:Help("Alt+R: rotate around pivot bitangent")
         keybindForm:Help("Hold Ctrl with R/Shift+R/Alt+R to rotate in reverse")
-        keybindForm:Help("RMB: invert axis")
         keybindForm:Help("Shift+LMB #1 or #2: duplicate on apply")
         keybindForm:Help("+USE + RMB: reset source selection")
     end
 
     function PANEL:GetPreferredHeight()
-        return 620
+        return 600
     end
 
     vgui.Register(MODE.PanelClass, PANEL, "DPanel")
 end
 
-Registry.Register("face_snap", MODE)
+Registry.Register("rotation", MODE)

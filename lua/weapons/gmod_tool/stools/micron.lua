@@ -52,6 +52,7 @@ if SERVER then
 	AddCSLuaFile("micron/sh_math.lua")
 	AddCSLuaFile("micron/sh_snap_points.lua")
 	AddCSLuaFile("micron/sh_mode_registry.lua")
+	AddCSLuaFile("micron/sh_mode_utils.lua")
 	AddCSLuaFile("micron/cl_cpanel.lua")
 	AddCSLuaFile("micron/cl_hud.lua")
 end
@@ -59,6 +60,7 @@ end
 include("micron/sh_math.lua")
 include("micron/sh_snap_points.lua")
 include("micron/sh_mode_registry.lua")
+include("micron/sh_mode_utils.lua")
 includeModeFiles()
 
 local defaultModeId = (Micron and Micron.ModeRegistry and Micron.ModeRegistry.FirstId and Micron.ModeRegistry.FirstId()) or ""
