@@ -190,6 +190,21 @@ function TOOL:Render()
 		return
 	end
 
+	local owner = self.GetOwner and self:GetOwner() or nil
+	if not IsValid(owner) then
+		return
+	end
+
+	local activeWeapon = owner:GetActiveWeapon()
+	if not IsValid(activeWeapon) or activeWeapon:GetClass() ~= "gmod_tool" then
+		return
+	end
+
+	local activeTool = owner.GetTool and owner:GetTool() or nil
+	if not activeTool or activeTool.Mode ~= FileName then
+		return
+	end
+
 	render.SetColorMaterial()
 	Micron.Client.RenderWorld(self)
 end

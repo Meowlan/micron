@@ -18,6 +18,40 @@ local targetHoloDuplicateColor = Color(255, 185, 110, 190)
 local DEFAULT_LOCAL_N = Vector(0, 0, 1)
 local DEFAULT_LOCAL_U = Vector(1, 0, 0)
 
+local function hasValidToolOwner(tool)
+    if not tool or not tool.GetOwner then
+        return false
+    end
+
+    return IsValid(tool:GetOwner())
+end
+
+local function buildConVarReader(tool, ply)
+    if tool and hasValidToolOwner(tool) then
+        return tool
+    end
+
+    if not IsValid(ply) then
+        return nil
+    end
+
+    local reader = {}
+
+    function reader:GetOwner()
+        return ply
+    end
+
+    function reader:GetClientInfo(key)
+        return ply:GetInfo("micron_" .. tostring(key)) or ""
+    end
+
+    function reader:GetClientNumber(key, defaultValue)
+        return ply:GetInfoNum("micron_" .. tostring(key), tonumber(defaultValue) or 0)
+    end
+
+    return reader
+end
+
 local function drawAxisLine(startPos, axis, length, color)
     render.DrawLine(startPos, startPos + axis * length, color, true)
 end
@@ -46,9 +80,12 @@ local function drawSnapData(ent, snapData)
 end
 
 local function getToolSettings(tool)
+    local ply = LocalPlayer()
+    local conVarReader = buildConVarReader(tool, ply)
+
     local modeId = ""
-    if tool then
-        modeId = tool:GetClientInfo("mode") or ""
+    if conVarReader then
+        modeId = conVarReader:GetClientInfo("mode") or ""
     end
 
     local mode = Registry.Get(modeId)
@@ -59,8 +96,8 @@ local function getToolSettings(tool)
     end
 
     local settings = {}
-    if mode and mode.GetSettings and tool then
-        settings = mode.GetSettings(tool) or {}
+    if mode and mode.GetSettings and conVarReader then
+        settings = mode.GetSettings(conVarReader) or {}
     end
 
     if Utils and Utils.ValidateSettingsForMode then
