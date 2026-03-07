@@ -63,7 +63,14 @@ include("micron/sh_mode_registry.lua")
 include("micron/sh_mode_utils.lua")
 includeModeFiles()
 
-local defaultModeId = (Micron and Micron.ModeRegistry and Micron.ModeRegistry.FirstId and Micron.ModeRegistry.FirstId()) or ""
+local defaultModeId = ""
+if Micron and Micron.ModeRegistry then
+	if Micron.ModeRegistry.Get and Micron.ModeRegistry.Get("move") then
+		defaultModeId = "move"
+	elseif Micron.ModeRegistry.FirstId then
+		defaultModeId = Micron.ModeRegistry.FirstId() or ""
+	end
+end
 TOOL.ClientConVar.mode = defaultModeId
 
 if SERVER then
