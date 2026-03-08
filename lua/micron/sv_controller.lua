@@ -624,6 +624,20 @@ function Controller.Reload(tool)
         return false
     end
 
+    local ply = tool:GetOwner()
+    if not IsValid(ply) then
+        return false
+    end
+
+    local mode, state = ensureModeState(tool, ply)
+    if mode and mode.OnReload then
+        local settings = getModeSettings(mode, tool)
+        local handled = mode.OnReload(tool, ply, state, settings)
+        if handled ~= nil then
+            return false
+        end
+    end
+
     Controller.RotateFromInput(tool)
     return false
 end

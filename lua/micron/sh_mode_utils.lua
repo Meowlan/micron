@@ -267,6 +267,11 @@ function Utils.ValidateSettingsForMode(modeId, settings)
         out.gap = sanitizeNumber(out.gap, 0, -maxGap, maxGap)
         out.alignToSurface = sanitizeBool(out.alignToSurface)
         out.invertDirection = sanitizeBool(out.invertDirection)
+    elseif modeId == "push_pull" then
+        out.pushPullUnits = sanitizeNumber(out.pushPullUnits, 32, 0, maxGap)
+        out.pushPullDepthMult = sanitizeNumber(out.pushPullDepthMult, 100, 0, 6400)
+        out.useDepthMultiplier = sanitizeBool(out.useDepthMultiplier)
+        out.invertPull = sanitizeBool(out.invertPull)
     end
 
     return out
