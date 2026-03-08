@@ -197,6 +197,10 @@ function TOOL:Render()
 		return
 	end
 
+	if not IsValid(self:GetWeapon()) then
+		return
+	end
+
 	local owner = self.GetOwner and self:GetOwner() or nil
 	if not IsValid(owner) then
 		return
