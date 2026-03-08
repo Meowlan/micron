@@ -13,7 +13,6 @@ MODE.Description = "Drop source to a surface."
 MODE.RequiresTargetConnector = false
 MODE.ApplyOnSourceSelection = true
 MODE.PreviewFromTraceWhenIdle = true
-MODE.DisableSnapVisualization = true
 MODE.LatchDuplicateOnSource = false
 MODE.DuplicateFromSourceOnly = true
 MODE.ClientConVarDefaults = {
