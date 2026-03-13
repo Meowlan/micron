@@ -125,7 +125,11 @@ end
 
 local function attachRenderHook(tool)
 	local hookId = getRenderHookId(tool)
-	hook.Add("PostDrawOpaqueRenderables", hookId, function()
+	hook.Add("PostDrawOpaqueRenderables", hookId, function(bDrawingDepth, bDrawingSkybox)
+		if bDrawingDepth or bDrawingSkybox then
+			return
+		end
+
 		if not Micron or not Micron.Client or not Micron.Client.RenderWorld then
 			return
 		end

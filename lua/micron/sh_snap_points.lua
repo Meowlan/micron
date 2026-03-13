@@ -9,6 +9,7 @@ local EPSILON_SQR = EPSILON * EPSILON
 local DEFAULT_GRID_SUBDIVISIONS = 4
 local MIN_GRID_SUBDIVISIONS = 1
 local MAX_GRID_SUBDIVISIONS = 24
+local PRIMITIVE_AXIS_SNAP_DOT = 0.9995
 
 local GRID_FACE_INSET_UNITS = 0.355
 
@@ -32,6 +33,58 @@ local function clampGridSubdivisions(value)
     return asNumber
 end
 
+local function chooseDeterministicHint(normal)
+    local ax = math.abs(normal.x)
+    local ay = math.abs(normal.y)
+    local az = math.abs(normal.z)
+
+    if ax <= ay and ax <= az then
+        return Vector(1, 0, 0)
+    end
+
+    if ay <= ax and ay <= az then
+        return Vector(0, 1, 0)
+    end
+
+    return Vector(0, 0, 1)
+end
+
+local function snapToDominantAxisIfClose(normal, dotThreshold)
+    local axes = {
+        { name = "x", vec = Vector(1, 0, 0) },
+        { name = "y", vec = Vector(0, 1, 0) },
+        { name = "z", vec = Vector(0, 0, 1) }
+    }
+
+    local bestDot = -1
+    local bestAxis = nil
+    local bestSign = 1
+
+    for _, axis in ipairs(axes) do
+        local d = normal:Dot(axis.vec)
+        local absDot = math.abs(d)
+        if absDot > bestDot then
+            bestDot = absDot
+            bestAxis = axis.name
+            bestSign = d >= 0 and 1 or -1
+        end
+    end
+
+    if bestDot < (dotThreshold or PRIMITIVE_AXIS_SNAP_DOT) then
+        return normal, false, nil, bestDot
+    end
+
+    if bestAxis == "x" then
+        return Vector(bestSign, 0, 0), true, bestAxis, bestDot
+    end
+
+    if bestAxis == "y" then
+        return Vector(0, bestSign, 0), true, bestAxis, bestDot
+    end
+
+    return Vector(0, 0, bestSign), true, bestAxis, bestDot
+end
+
 local function isSnappableEntity(ent)
     if not IsValid(ent) then return false end
     if ent:IsPlayer() or ent:IsNPC() or ent:IsWeapon() then return false end
@@ -42,6 +95,23 @@ local function isSnappableEntity(ent)
 
     local phys = ent:GetPhysicsObject()
     return IsValid(phys)
+end
+
+local function isPrimitiveCompatEntity(ent)
+    if not IsValid(ent) then
+        return false
+    end
+
+    local className = ent:GetClass() or ""
+    if className ~= "" and string.StartWith(className, "primitive_") then
+        return true
+    end
+
+    if scripted_ents and scripted_ents.IsBasedOn and className ~= "" then
+        return scripted_ents.IsBasedOn(className, "primitive_base") and true or false
+    end
+
+    return false
 end
 
 local function buildObbCorners(mins, maxs)
@@ -164,7 +234,12 @@ local function pointInPolygon2D(poly, p)
     return inside
 end
 
-local function computeBasisForFace(normal, orderedVerts)
+local function computeBasisForFace(normal, orderedVerts, options)
+    if options and options.forceDeterministicBasis then
+        local deterministicHint = options.deterministicHint or chooseDeterministicHint(normal)
+        return Math.BuildBasis(normal, deterministicHint)
+    end
+
     local hint = nil
 
     if #orderedVerts >= 2 then
@@ -367,7 +442,7 @@ local function collectHorizontalIntersections(poly, y)
     return intersections
 end
 
-local function buildFacePolygon(mins, maxs, hitPosLocal, hitNormalLocal)
+local function buildFacePolygon(mins, maxs, hitPosLocal, hitNormalLocal, options)
     local corners = buildObbCorners(mins, maxs)
     local intersections = {}
 
@@ -392,7 +467,7 @@ local function buildFacePolygon(mins, maxs, hitPosLocal, hitNormalLocal)
 
     orderedVerts = insetFaceVertices(orderedVerts, center, GRID_FACE_INSET_UNITS)
 
-    local basis = computeBasisForFace(hitNormalLocal, orderedVerts)
+    local basis = computeBasisForFace(hitNormalLocal, orderedVerts, options)
     local poly2D, bounds2D = computePoly2D(orderedVerts, center, basis)
 
     return {
@@ -530,10 +605,12 @@ local function nearestSnapPoint(points, localHit)
     return bestIndex
 end
 
-function SnapPoints.ComputeLocal(obbMins, obbMaxs, hitPosLocal, hitNormalLocal, gridSubdivisions)
+function SnapPoints.ComputeLocal(obbMins, obbMaxs, hitPosLocal, hitNormalLocal, gridSubdivisions, options)
+    options = options or {}
+
     local normal = Math.SafeNormalize(hitNormalLocal, Vector(0, 0, 1))
     local subdivisions = clampGridSubdivisions(gridSubdivisions)
-    local face = buildFacePolygon(obbMins, obbMaxs, hitPosLocal, normal)
+    local face = buildFacePolygon(obbMins, obbMaxs, hitPosLocal, normal, options)
     if not face then
         return nil, "Could not derive a face polygon from hit data."
     end
@@ -563,7 +640,44 @@ function SnapPoints.ComputeForEntity(ent, worldHitPos, worldHitNormal, gridSubdi
     local localHitPos = ent:WorldToLocal(worldHitPos)
     local localHitNormal = Math.WorldDirToLocal(ent, worldHitNormal)
 
-    local snapData, err = SnapPoints.ComputeLocal(ent:OBBMins(), ent:OBBMaxs(), localHitPos, localHitNormal, gridSubdivisions)
+    local isPrimitiveCompat = isPrimitiveCompatEntity(ent)
+    local computeOptions = nil
+    if isPrimitiveCompat then
+        local stabilizedNormal = snapToDominantAxisIfClose(localHitNormal, PRIMITIVE_AXIS_SNAP_DOT)
+        localHitNormal = stabilizedNormal
+
+        computeOptions = {
+            forceDeterministicBasis = true,
+            deterministicHint = chooseDeterministicHint(localHitNormal)
+        }
+    end
+
+    local obbMins, obbMaxs = ent:OBBMins(), ent:OBBMaxs()
+    local snapData, err = SnapPoints.ComputeLocal(obbMins, obbMaxs, localHitPos, localHitNormal, gridSubdivisions, computeOptions)
+
+    if not snapData and isPrimitiveCompat then
+        local retryHitPos = Vector(
+            math.Clamp(localHitPos.x, obbMins.x, obbMaxs.x),
+            math.Clamp(localHitPos.y, obbMins.y, obbMaxs.y),
+            math.Clamp(localHitPos.z, obbMins.z, obbMaxs.z)
+        )
+
+        local wasClamped = math.abs(retryHitPos.x - localHitPos.x) > EPSILON
+            or math.abs(retryHitPos.y - localHitPos.y) > EPSILON
+            or math.abs(retryHitPos.z - localHitPos.z) > EPSILON
+
+        if wasClamped then
+            local retrySnapData, retryErr = SnapPoints.ComputeLocal(obbMins, obbMaxs, retryHitPos, localHitNormal, gridSubdivisions, computeOptions)
+            err = retryErr or err
+
+            if retrySnapData then
+                snapData = retrySnapData
+                err = nil
+                localHitPos = retryHitPos
+            end
+        end
+    end
+
     if not snapData then
         return nil, err
     end

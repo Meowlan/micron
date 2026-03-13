@@ -17,6 +17,32 @@ local targetHoloDuplicateColor = Color(255, 185, 110, 190)
 
 local DEFAULT_LOCAL_N = Vector(0, 0, 1)
 local DEFAULT_LOCAL_U = Vector(1, 0, 0)
+local primitiveGhostMaterial = CreateMaterial("micron_primitive_ghost", "UnlitGeneric", {
+    ["$basetexture"] = "models/debug/debugwhite",
+    ["$model"] = "1",
+    ["$translucent"] = "1",
+    ["$vertexalpha"] = "1",
+    ["$vertexcolor"] = "1"
+})
+
+local drawAxisLine
+
+local function isPrimitiveCompatEntity(ent)
+    if not IsValid(ent) then
+        return false
+    end
+
+    local className = ent:GetClass() or ""
+    if className ~= "" and string.StartWith(className, "primitive_") then
+        return true
+    end
+
+    if scripted_ents and scripted_ents.IsBasedOn and className ~= "" then
+        return scripted_ents.IsBasedOn(className, "primitive_base") and true or false
+    end
+
+    return false
+end
 
 local function hasValidToolOwner(tool)
     if not tool or not tool.GetOwner then
@@ -52,7 +78,7 @@ local function buildConVarReader(tool, ply)
     return reader
 end
 
-local function drawAxisLine(startPos, axis, length, color)
+drawAxisLine = function(startPos, axis, length, color)
     render.DrawLine(startPos, startPos + axis * length, color, true)
 end
 
@@ -218,6 +244,31 @@ local function drawPreviewGhost(solve)
         return
     end
 
+    if isPrimitiveCompatEntity(solve.entity) and solve.entity.GetRenderMesh then
+        local meshData = solve.entity:GetRenderMesh()
+        local meshObj = meshData and meshData.Mesh or nil
+        if istable(meshData) and IsValid(meshObj) and solve.position and solve.angles then
+            local matrix = Matrix()
+            matrix:SetTranslation(solve.position)
+            matrix:SetAngles(solve.angles)
+
+            local scale = tonumber(solve.entity:GetModelScale()) or 1
+            if math.abs(scale - 1) > 1e-6 then
+                matrix:SetScale(Vector(scale, scale, scale))
+            end
+
+            cam.PushModelMatrix(matrix)
+            render.SetBlend(0.35)
+            render.SetMaterial(meshData.Material or primitiveGhostMaterial)
+            render.OverrideBlend(true, BLEND_SRC_ALPHA, BLEND_ONE_MINUS_SRC_ALPHA, BLENDFUNC_ADD, BLEND_ONE, BLEND_ZERO, BLENDFUNC_ADD)
+            meshObj:Draw()
+            render.OverrideBlend(false)
+            render.SetBlend(1)
+            cam.PopModelMatrix()
+            return
+        end
+    end
+
     local modelName = solve.entity:GetModel()
     if not isstring(modelName) or modelName == "" then
         return
@@ -245,18 +296,42 @@ local function drawPreviewGhosts(sourceEnt, ghosts)
 
     local skin = sourceEnt:GetSkin() or 0
     local maxGhosts = math.min(#ghosts, 64)
+    local canDrawRenderMesh = isPrimitiveCompatEntity(sourceEnt) and sourceEnt.GetRenderMesh and true or false
+    local meshData = canDrawRenderMesh and sourceEnt:GetRenderMesh() or nil
+    local meshObj = meshData and meshData.Mesh or nil
+    local useRenderMesh = istable(meshData) and IsValid(meshObj)
 
     for i = 1, maxGhosts do
         local ghost = ghosts[i]
         if ghost and ghost.position and ghost.angles then
             local blend = math.max(0.14, 0.32 - (i - 1) * 0.008)
-            render.SetBlend(blend)
-            render.Model({
-                model = modelName,
-                pos = ghost.position,
-                angle = ghost.angles,
-                skin = skin
-            })
+            if useRenderMesh then
+                local matrix = Matrix()
+                matrix:SetTranslation(ghost.position)
+                matrix:SetAngles(ghost.angles)
+
+                local scale = tonumber(sourceEnt:GetModelScale()) or 1
+                if math.abs(scale - 1) > 1e-6 then
+                    matrix:SetScale(Vector(scale, scale, scale))
+                end
+
+                cam.PushModelMatrix(matrix)
+                render.SetBlend(blend)
+                render.SetMaterial(meshData.Material or primitiveGhostMaterial)
+                render.OverrideBlend(true, BLEND_SRC_ALPHA, BLEND_ONE_MINUS_SRC_ALPHA, BLENDFUNC_ADD, BLEND_ONE, BLEND_ZERO, BLENDFUNC_ADD)
+                meshObj:Draw()
+                render.OverrideBlend(false)
+                render.SetBlend(1)
+                cam.PopModelMatrix()
+            else
+                render.SetBlend(blend)
+                render.Model({
+                    model = modelName,
+                    pos = ghost.position,
+                    angle = ghost.angles,
+                    skin = skin
+                })
+            end
         end
     end
 
