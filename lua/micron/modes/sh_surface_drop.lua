@@ -88,6 +88,8 @@ function MODE.BuildConnector(_, trace, settings)
         entity = ent,
         hitPosWorld = ent:GetPos(),
         worldBasis = worldBasis,
+        worldHitNormal = worldNormal,
+        faceDistance = (trace.HitPos - ent:GetPos()):Dot(worldNormal),
         localPos = vector_origin,
         localBasis = localBasis,
         snapData = nil
@@ -150,8 +152,17 @@ function MODE.Solve(sourceConnector, _, settings)
 
     local srcBasis = sourceConnector.worldBasis
     local liveSettings = settings or {}
-    local contactLocalNormal = liveSettings.invertDirection and -sourceConnector.localBasis.n or sourceConnector.localBasis.n
-    local dropDir = liveSettings.invertDirection and -srcBasis.n or srcBasis.n
+    local contactLocalNormal, dropDir
+    if not liveSettings.invertDirection and sourceConnector.worldHitNormal then
+        -- Shift held: clicked face is the contact face; use the actual surface normal
+        dropDir = sourceConnector.worldHitNormal
+        contactLocalNormal = Math.WorldDirToLocal(srcEnt, sourceConnector.worldHitNormal)
+    else
+        -- No shift: opposite (unknown) face; use snapped OBB-axis direction
+        local flip = liveSettings.invertDirection
+        contactLocalNormal = flip and -sourceConnector.localBasis.n or sourceConnector.localBasis.n
+        dropDir = flip and -srcBasis.n or srcBasis.n
+    end
     if dropDir:LengthSqr() <= 1e-8 then
         return nil, "Could not resolve drop direction."
     end
@@ -181,7 +192,14 @@ function MODE.Solve(sourceConnector, _, settings)
     end
 
     local sourceContactNormal = rotateLocalDirToWorld(contactLocalNormal, finalAng)
-    local supportDistance = getSupportDistanceAlongWorld(srcEnt, sourceContactNormal, finalAng)
+    local supportDistance
+    if not liveSettings.invertDirection and sourceConnector.faceDistance then
+        -- Shift held: use exact mesh face distance, which is rotation-invariant
+        supportDistance = sourceConnector.faceDistance
+    else
+        -- No shift: opposite face unknown, fall back to OBB hull
+        supportDistance = getSupportDistanceAlongWorld(srcEnt, sourceContactNormal, finalAng)
+    end
 
     local gap = tonumber(liveSettings.gap) or 0
     local effectiveGap = gap + SURFACE_DROP_SIZE_GAP_BIAS_UNITS
@@ -195,6 +213,16 @@ function MODE.Solve(sourceConnector, _, settings)
 end
 
 if CLIENT then
+    local dropLineColor = Color(180, 230, 255, 200)
+
+    function MODE.DrawSourceOverlay(previewConnector, settings)
+        if not IsValid(previewConnector.entity) then return end
+        local solve = MODE.Solve(previewConnector, nil, settings)
+        if not solve or not solve.position then return end
+        local faceCenter = previewConnector.entity:GetPos() + previewConnector.worldHitNormal * previewConnector.faceDistance
+        render.DrawLine(faceCenter, solve.position, dropLineColor, true)
+    end
+
     MODE.PanelClass = "MicronModeSurfaceDropPanel"
 
     local PANEL = {}
